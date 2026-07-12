@@ -3,61 +3,93 @@
 
 #define ROWS 20
 #define COLS 8
+#define K 3
 
-// in main i have to call znorm_row in a loop
+// Helper function i will use loop unrolling just to have it ready for rwds
+double dot_product(const double *v1, const double *v2, size_t n) {
+  double sum0 = 0.0, sum1 = 0.0, sum2 = 0.0, sum3 = 0.0;
+  size_t i = 0;
+  double t_sum = 0.0;
+  if (n >= 4) {
+    for (; i <= n - 4; i += 4) {
+      sum0 += v1[i] * v2[i];
+      sum1 += v1[i + 1] * v2[i + 1];
+      sum2 += v1[i + 2] * v2[i + 2];
+      sum3 += v1[i + 3] * v2[i + 3];
+    }
+    t_sum = sum0 + sum1 + sum2 + sum3;
+  }
+  // in case reminder
+  for (; i < n; i++) {
+    t_sum += v1[i] * v2[i];
+  }
+
+  return t_sum;
+}
+
+// z-normalization
 void znorm_row(double *x, int n) {
   double sum = 0.0;
   double variance = 0.0;
   double mean, std_dev;
 
-  // 1. mean
   for (int i = 0; i < n; i++) {
     sum += x[i];
   }
   mean = sum / n;
 
-  // 2. variance & std_dev
   for (int i = 0; i < n; i++) {
     variance += pow(x[i] - mean, 2);
   }
 
   std_dev = sqrt(variance / n) + 1e-12;
 
-  // 3. apply
+  // reverse division opt
+  double inv_std_dev = 1.0 / std_dev;
   for (int i = 0; i < n; i++) {
-    x[i] = (x[i] - mean) / std_dev;
+    x[i] = (x[i] - mean) * inv_std_dev;
   }
 }
 
 typedef struct {
-  double mean[8];
+  double mean[COLS];
   long n;
 } RunningMean;
 
+// running mean
 void rmean_update(RunningMean *rm, const double *x) {
-  rm->n++; // this represents the row not a single value in main i will have to
-           // call it in a loop
-  for (int i = 0; i < 8; i++)
-    rm->mean[i] +=
-        (x[i] - rm->mean[i]) /
-        rm->n; // new val - prev mean / n and then add that to update prev mean
+  rm->n++;
+  for (int i = 0; i < COLS; i++)
+    rm->mean[i] += (x[i] - rm->mean[i]) / rm->n;
 }
 
 typedef struct {
-  double v[COLS];
-} Oja1;
+  double v[3][COLS];
+} Oja3;
 
-void oja1_update(Oja1 *p, const double *xc, double lr) {
-  double y = 0.0;
-  for (int i = 0; i < COLS; i++) {
-    y += xc[i] * p->v[i];
-  }
-  for (int i = 0; i < COLS; i++) {
-    p->v[i] += lr * y * (xc[i] - y * p->v[i]);
+void oja3_update(Oja3 *p, const double *xc, double lr) {
+  double u[COLS];
+  for (int i = 0; i < COLS; i++)
+    u[i] = xc[i];
+
+  for (int j = 0; j < K; j++) {
+    double y = dot_product(u, p->v[j], COLS);
+
+    // Oja rule
+    for (int i = 0; i < COLS; i++) {
+      p->v[j][i] += lr * y * (u[i] - y * p->v[j][i]);
+    }
+
+    double d = dot_product(u, p->v[j], COLS);
+
+    // Sanger deflation
+    for (int i = 0; i < COLS; i++) {
+      u[i] -= d * p->v[j][i];
+    }
   }
 }
+
 int main() {
-  /* 0-6: ανοδικές, 7-13: καθοδικές, 14-19: V-shape */
   double data[ROWS][COLS] = {{1.0, 2.1, 2.9, 4.2, 5.0, 6.1, 6.9, 8.0},
                              {0.8, 1.9, 3.1, 3.9, 5.2, 5.9, 7.1, 7.9},
                              {1.2, 2.0, 3.2, 4.1, 4.8, 6.2, 7.0, 8.1},
@@ -79,31 +111,48 @@ int main() {
                              {8.1, 5.8, 4.2, 2.1, 1.9, 3.8, 5.9, 8.2},
                              {8.0, 6.0, 4.0, 2.0, 2.0, 4.0, 6.0, 8.0}};
 
-  // It is crucial to set 'n' to 0 and optionally zero out the means
   RunningMean my_stats = {{0.0}, 0};
 
-  // for every row
   for (int i = 0; i < ROWS; i++) {
-    // data[i] is like (double*) pointing at line start(or after arrays
-    // metadata)
     znorm_row(data[i], COLS);
     rmean_update(&my_stats, data[i]);
   }
 
-  // 4. Print the resulting means
-  printf("Number of samples processed: %ld\n", my_stats.n);
-  printf("Updated means:\n");
-  for (int i = 0; i < 8; i++) {
-    printf("  Dimension %d: %.4f\n", i, my_stats.mean[i]);
+  Oja3 oja = {.v[0] = {1, 0, 0, 0, 0, 0, 0, 0},
+              .v[1] = {0, 1, 0, 0, 0, 0, 0, 0},
+              .v[2] = {0, 0, 1, 0, 0, 0, 0, 0}};
+  double xc[COLS];
+  for (int epoch = 0; epoch < 200; epoch++)
+    for (int r = 0; r < ROWS; r++) {
+      for (int i = 0; i < COLS; i++)
+        xc[i] = data[r][i] - my_stats.mean[i];
+      oja3_update(&oja, xc, 0.01);
+    }
+
+  // v Magnitudes
+  printf("Vector Magnitudes\n");
+  for (int j = 0; j < K; j++) {
+    double nrm_sq = dot_product(oja.v[j], oja.v[j], COLS);
+    printf("||v%d|| = %.4f\n", j, sqrt(nrm_sq));
   }
 
-  printf("\nafter znorm_row (per line):\n");
-  for (int i = 0; i < ROWS; i++) {
-    for (int j = 0; j < COLS; j++) {
-      printf("%7.2f ", data[i][j]);
+  // Orthogonality check
+  printf("\n Pairwise Orthogonality Check (Dot Products)\n");
+  for (int j = 0; j < K; j++) {
+    for (int b = j + 1; b < K; b++) {
+      double dot_prod = dot_product(oja.v[j], oja.v[b], COLS);
+      printf("v%d . v%d = %11.4e\n", j, b, dot_prod);
     }
+  }
+  printf("\n");
+
+  printf("Components Matrix:\n");
+  for (int j = 0; j < K; j++) {
+    for (int i = 0; i < COLS; i++)
+      printf("%7.3f ", oja.v[j][i]);
     printf("\n");
   }
 
+  printf("\nNumber of samples processed: %ld\n", my_stats.n);
   return 0;
 }

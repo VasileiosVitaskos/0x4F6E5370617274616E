@@ -1,0 +1,7 @@
+# binaries
+spartan_toy
+spartan_toy_dbg
+my_program
+*.o
+*.out
+a.out
