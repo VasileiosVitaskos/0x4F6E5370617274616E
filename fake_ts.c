@@ -89,6 +89,40 @@ void oja3_update(Oja3 *p, const double *xc, double lr) {
   }
 }
 
+void gram_schmidt(Oja3 *p) {
+  double nrm = sqrt(dot_product(p->v[0], p->v[0], COLS));
+  if (nrm < 1e-12)
+    return;
+  for (int i = 0; i < COLS; i++) {
+    p->v[0][i] = p->v[0][i] / nrm;
+  }
+
+  double d01 = dot_product(p->v[1], p->v[0], COLS);
+  for (int i = 0; i < COLS; i++) {
+    p->v[1][i] -= d01 * p->v[0][i];
+  }
+  double nrm1 = sqrt(dot_product(p->v[1], p->v[1], COLS));
+  if (nrm1 < 1e-12)
+    return;
+  for (int i = 0; i < COLS; i++) {
+    p->v[1][i] = p->v[1][i] / nrm1;
+  }
+  double d02 = dot_product(p->v[2], p->v[0], COLS);
+  for (int i = 0; i < COLS; i++) {
+    p->v[2][i] -= d02 * p->v[0][i];
+  }
+  double d12 = dot_product(p->v[2], p->v[1], COLS);
+  for (int i = 0; i < COLS; i++) {
+    p->v[2][i] -= d12 * p->v[1][i];
+  }
+  double nrm2 = sqrt(dot_product(p->v[2], p->v[2], COLS));
+  if (nrm2 < 1e-12)
+    return;
+  for (int i = 0; i < COLS; i++) {
+    p->v[2][i] = p->v[2][i] / nrm2;
+  }
+}
+
 int main() {
   double data[ROWS][COLS] = {{1.0, 2.1, 2.9, 4.2, 5.0, 6.1, 6.9, 8.0},
                              {0.8, 1.9, 3.1, 3.9, 5.2, 5.9, 7.1, 7.9},
@@ -122,12 +156,14 @@ int main() {
               .v[1] = {0, 1, 0, 0, 0, 0, 0, 0},
               .v[2] = {0, 0, 1, 0, 0, 0, 0, 0}};
   double xc[COLS];
-  for (int epoch = 0; epoch < 200; epoch++)
+  for (int epoch = 0; epoch < 200; epoch++) {
     for (int r = 0; r < ROWS; r++) {
       for (int i = 0; i < COLS; i++)
         xc[i] = data[r][i] - my_stats.mean[i];
       oja3_update(&oja, xc, 0.01);
     }
+    gram_schmidt(&oja);
+  }
 
   // v Magnitudes
   printf("Vector Magnitudes\n");
