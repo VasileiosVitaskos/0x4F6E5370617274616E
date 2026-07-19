@@ -17,8 +17,10 @@ double dot_product(const double *v1, const double *v2, size_t n) {
       sum2 += v1[i + 2] * v2[i + 2];
       sum3 += v1[i + 3] * v2[i + 3];
     }
-    t_sum = sum0 + sum1 + sum2 + sum3;
   }
+
+  t_sum = sum0 + sum1 + sum2 + sum3;
+
   // in case reminder
   for (; i < n; i++) {
     t_sum += v1[i] * v2[i];
@@ -163,6 +165,14 @@ int main() {
       oja3_update(&oja, xc, 0.01);
     }
     gram_schmidt(&oja);
+  }
+
+  for (int r = 0; r < ROWS; r++) {
+    for (int i = 0; i < COLS; i++) {
+      xc[i] = data[r][i] - my_stats.mean[i];
+    }
+    printf("%2d %7.3f %7.3f %7.3f\n", r, dot_product(xc, oja.v[0], COLS),
+           dot_product(xc, oja.v[1], COLS), dot_product(xc, oja.v[2], COLS));
   }
 
   // v Magnitudes
