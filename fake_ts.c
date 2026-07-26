@@ -1,6 +1,7 @@
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
-
+#include <stdlib.h>
 #define ROWS 20
 #define COLS 8
 #define K 3
@@ -125,6 +126,16 @@ void gram_schmidt(Oja3 *p) {
   }
 }
 
+int cmp_double(const void *a, const void *b) {
+  double x = *(const double *)a; // diref as double
+  double y = *(const double *)b;
+  if (x < y)
+    return -1;
+  if (x > y)
+    return 1;
+  return 0;
+}
+
 int main() {
   double data[ROWS][COLS] = {{1.0, 2.1, 2.9, 4.2, 5.0, 6.1, 6.9, 8.0},
                              {0.8, 1.9, 3.1, 3.9, 5.2, 5.9, 7.1, 7.9},
@@ -166,13 +177,45 @@ int main() {
     }
     gram_schmidt(&oja);
   }
+  double proj[ROWS][K];
 
   for (int r = 0; r < ROWS; r++) {
     for (int i = 0; i < COLS; i++) {
       xc[i] = data[r][i] - my_stats.mean[i];
     }
-    printf("%2d %7.3f %7.3f %7.3f\n", r, dot_product(xc, oja.v[0], COLS),
-           dot_product(xc, oja.v[1], COLS), dot_product(xc, oja.v[2], COLS));
+    proj[r][0] = dot_product(xc, oja.v[0], COLS);
+    proj[r][1] = dot_product(xc, oja.v[1], COLS);
+    proj[r][2] = dot_product(xc, oja.v[2], COLS);
+
+    printf("%2d %7.3f %7.3f %7.3f\n", r, proj[r][0], proj[r][1], proj[r][2]);
+  }
+
+  double col[ROWS];
+  double target_depth = (double)ROWS / 4;
+  double bkpt[K][4];
+  for (int j = 0; j < K; j++) {
+    for (int r = 0; r < ROWS; r++)
+      col[r] = proj[r][j];
+    qsort(col, ROWS, sizeof(double), cmp_double);
+    double bin_index = 0.0;
+    for (int bp = 0; bp < 3; bp++) {
+      bin_index += target_depth;
+      bkpt[j][bp] = col[(int)bin_index];
+      printf("β%d=%9.6f\n", bp, bkpt[j][bp]);
+    }
+    bkpt[j][3] = DBL_MAX;
+  }
+
+  printf("\nWords:\n");
+  for (int r = 0; r < ROWS; r++) {
+    printf("%2d  ", r);
+    for (int j = 0; j < K; j++) {
+      int s = 0;
+      while (proj[r][j] > bkpt[j][s])
+        s++;
+      printf("%c", 'a' + s); // 97-100 ASCII
+    }
+    printf("\n");
   }
 
   // v Magnitudes
