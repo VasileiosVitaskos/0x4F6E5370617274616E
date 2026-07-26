@@ -28,7 +28,7 @@ Gram-Schmidt step (work in progress).
 - [x] per-window z-normalization
 - [x] running mean (incremental)
 - [x] Oja + Sanger deflation (K=3 components)
-- [ ] periodic Gram-Schmidt re-orthogonalization
-- [ ] projections + quantile breakpoints + digitize (symbols)
+- [x] periodic Gram-Schmidt re-orthogonalization
+- [x] projections + quantile breakpoints + digitize (symbols)
 - [ ] chi-squared drift detector
 - [ ] epoch rebuild + Procrustes/SO(3) symbol translation
