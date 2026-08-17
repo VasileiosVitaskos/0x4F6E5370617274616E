@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+
 #define ROWS 20
 #define COLS 8
 #define K 3
@@ -30,99 +31,163 @@ double dot_product(const double *v1, const double *v2, size_t n) {
   return t_sum;
 }
 
-// z-normalization
-void znorm_row(double *x, int n) {
+// z-normalization: one vector, one length
+void znorm_row(double *x, int m) {
   double sum = 0.0;
   double variance = 0.0;
   double mean, std_dev;
 
-  for (int i = 0; i < n; i++) {
+  for (int i = 0; i < m; i++) {
     sum += x[i];
   }
-  mean = sum / n;
+  mean = sum / m;
 
-  for (int i = 0; i < n; i++) {
+  for (int i = 0; i < m; i++) {
     variance += pow(x[i] - mean, 2);
   }
 
-  std_dev = sqrt(variance / n) + 1e-12;
+  std_dev = sqrt(variance / m) + 1e-12;
 
   // reverse division opt
   double inv_std_dev = 1.0 / std_dev;
-  for (int i = 0; i < n; i++) {
+  for (int i = 0; i < m; i++) {
     x[i] = (x[i] - mean) * inv_std_dev;
   }
 }
 
+/* ---------------- RunningMean: heap-allocated ---------------- */
+
 typedef struct {
-  double mean[COLS];
+  double *mean; /* m doubles */
   long n;
+  int m;
 } RunningMean;
+
+int rmean_init(RunningMean *rm, int m) {
+  if (m <= 0)
+    return -1;
+  rm->mean = calloc((size_t)m, sizeof(double));
+  if (!rm->mean)
+    return -1;
+  rm->n = 0;
+  rm->m = m;
+  return 0;
+}
+
+void rmean_free(RunningMean *rm) {
+  free(rm->mean);
+  rm->mean = NULL;
+  rm->n = 0;
+  rm->m = 0;
+}
 
 // running mean
 void rmean_update(RunningMean *rm, const double *x) {
+  int m = rm->m;
   rm->n++;
-  for (int i = 0; i < COLS; i++)
+  for (int i = 0; i < m; i++)
     rm->mean[i] += (x[i] - rm->mean[i]) / rm->n;
 }
 
-typedef struct {
-  double v[3][COLS];
-} Oja3;
+/* ---------------- OjaPCA: heap-allocated ---------------- */
 
-void oja3_update(Oja3 *p, const double *xc, double lr) {
-  double u[COLS];
-  for (int i = 0; i < COLS; i++)
+typedef struct {
+  double *v; /* k*m doubles: the basis, row j starts at v[j*m] */
+  double *u; /* m doubles: scratch buffer for the deflation   */
+  int k, m;
+} OjaPCA;
+
+int oja_init(OjaPCA *p, int k, int m) {
+  if (k > m || k <= 0 || m <= 0)
+    return -1;
+
+  p->k = k;
+  p->m = m;
+
+  p->v = calloc((size_t)k * m, sizeof(double));
+  if (!p->v)
+    return -1;
+
+  p->u = calloc((size_t)m, sizeof(double));
+  if (!p->u) {
+    free(p->v);
+    p->v = NULL;
+    return -1;
+  }
+
+  /* seeds e1, e2, ... : one on the diagonal of each row */
+  for (int j = 0; j < k; j++)
+    p->v[j * m + j] = 1.0;
+
+  return 0;
+}
+
+void oja_free(OjaPCA *p) {
+  free(p->v);
+  p->v = NULL;
+  free(p->u);
+  p->u = NULL;
+  p->k = 0;
+  p->m = 0;
+}
+
+void oja_update(OjaPCA *p, const double *xc, double lr) {
+  int k = p->k, m = p->m;
+  double *u = p->u;
+
+  for (int i = 0; i < m; i++)
     u[i] = xc[i];
 
-  for (int j = 0; j < K; j++) {
-    double y = dot_product(u, p->v[j], COLS);
+  for (int j = 0; j < k; j++) {
+    double *vj = &p->v[j * m];
+    double y = dot_product(u, vj, m);
 
     // Oja rule
-    for (int i = 0; i < COLS; i++) {
-      p->v[j][i] += lr * y * (u[i] - y * p->v[j][i]);
+    for (int i = 0; i < m; i++) {
+      vj[i] += lr * y * (u[i] - y * vj[i]);
     }
 
-    double d = dot_product(u, p->v[j], COLS);
+    double d = dot_product(u, vj, m);
 
     // Sanger deflation
-    for (int i = 0; i < COLS; i++) {
-      u[i] -= d * p->v[j][i];
+    for (int i = 0; i < m; i++) {
+      u[i] -= d * vj[i];
     }
   }
 }
 
-void gram_schmidt(Oja3 *p) {
-  double nrm = sqrt(dot_product(p->v[0], p->v[0], COLS));
-  if (nrm < 1e-12)
-    return;
-  for (int i = 0; i < COLS; i++) {
-    p->v[0][i] = p->v[0][i] / nrm;
-  }
+void gram_schmidt(OjaPCA *p) {
+  int k = p->k, m = p->m;
 
-  double d01 = dot_product(p->v[1], p->v[0], COLS);
-  for (int i = 0; i < COLS; i++) {
-    p->v[1][i] -= d01 * p->v[0][i];
-  }
-  double nrm1 = sqrt(dot_product(p->v[1], p->v[1], COLS));
-  if (nrm1 < 1e-12)
-    return;
-  for (int i = 0; i < COLS; i++) {
-    p->v[1][i] = p->v[1][i] / nrm1;
-  }
-  double d02 = dot_product(p->v[2], p->v[0], COLS);
-  for (int i = 0; i < COLS; i++) {
-    p->v[2][i] -= d02 * p->v[0][i];
-  }
-  double d12 = dot_product(p->v[2], p->v[1], COLS);
-  for (int i = 0; i < COLS; i++) {
-    p->v[2][i] -= d12 * p->v[1][i];
-  }
-  double nrm2 = sqrt(dot_product(p->v[2], p->v[2], COLS));
-  if (nrm2 < 1e-12)
-    return;
-  for (int i = 0; i < COLS; i++) {
-    p->v[2][i] = p->v[2][i] / nrm2;
+  // 1. Εξωτερικό loop: Διατρέχει κάθε διάνυσμα που θέλουμε να
+  // ορθοκανονικοποιήσουμε
+  for (int j = 0; j < k; j++) {
+    double *vj = &p->v[j * m];
+
+    // 2. Εσωτερικό loop: "Καθαρίζει" το τρέχον v[j] από ΟΛΑ τα προηγούμενα
+    // v[p_idx]
+    for (int p_idx = 0; p_idx < j; p_idx++) {
+      double *vp = &p->v[p_idx * m];
+      // Υπολογισμός της προβολής (dot) - ΠΡΕΠΕΙ να είναι μέσα στο loop
+      double d = dot_product(vj, vp, m);
+
+      // Αφαίρεση της προβολής
+      for (int i = 0; i < m; i++) {
+        vj[i] -= d * vp[i];
+      }
+    }
+
+    // 3. Κανονικοποίηση (Μέτρο, Guard, Διαίρεση)
+    double nrm = sqrt(dot_product(vj, vj, m));
+
+    // Το return έγινε continue: αν μηδενιστεί, προχωράμε στο επόμενο j
+    if (nrm < 1e-12) {
+      continue;
+    }
+
+    for (int i = 0; i < m; i++) {
+      vj[i] = vj[i] / nrm;
+    }
   }
 }
 
@@ -158,22 +223,30 @@ int main() {
                              {8.1, 5.8, 4.2, 2.1, 1.9, 3.8, 5.9, 8.2},
                              {8.0, 6.0, 4.0, 2.0, 2.0, 4.0, 6.0, 8.0}};
 
-  RunningMean my_stats = {{0.0}, 0};
+  RunningMean my_stats;
+  if (rmean_init(&my_stats, COLS) != 0) {
+    fprintf(stderr, "rmean_init failed\n");
+    return 1;
+  }
 
   for (int i = 0; i < ROWS; i++) {
     znorm_row(data[i], COLS);
     rmean_update(&my_stats, data[i]);
   }
 
-  Oja3 oja = {.v[0] = {1, 0, 0, 0, 0, 0, 0, 0},
-              .v[1] = {0, 1, 0, 0, 0, 0, 0, 0},
-              .v[2] = {0, 0, 1, 0, 0, 0, 0, 0}};
+  OjaPCA oja;
+  if (oja_init(&oja, K, COLS) != 0) {
+    fprintf(stderr, "oja_init failed\n");
+    rmean_free(&my_stats);
+    return 1;
+  }
+
   double xc[COLS];
   for (int epoch = 0; epoch < 200; epoch++) {
     for (int r = 0; r < ROWS; r++) {
       for (int i = 0; i < COLS; i++)
         xc[i] = data[r][i] - my_stats.mean[i];
-      oja3_update(&oja, xc, 0.01);
+      oja_update(&oja, xc, 0.01);
     }
     gram_schmidt(&oja);
   }
@@ -183,9 +256,9 @@ int main() {
     for (int i = 0; i < COLS; i++) {
       xc[i] = data[r][i] - my_stats.mean[i];
     }
-    proj[r][0] = dot_product(xc, oja.v[0], COLS);
-    proj[r][1] = dot_product(xc, oja.v[1], COLS);
-    proj[r][2] = dot_product(xc, oja.v[2], COLS);
+    proj[r][0] = dot_product(xc, &oja.v[0 * COLS], COLS);
+    proj[r][1] = dot_product(xc, &oja.v[1 * COLS], COLS);
+    proj[r][2] = dot_product(xc, &oja.v[2 * COLS], COLS);
 
     printf("%2d %7.3f %7.3f %7.3f\n", r, proj[r][0], proj[r][1], proj[r][2]);
   }
@@ -221,7 +294,7 @@ int main() {
   // v Magnitudes
   printf("Vector Magnitudes\n");
   for (int j = 0; j < K; j++) {
-    double nrm_sq = dot_product(oja.v[j], oja.v[j], COLS);
+    double nrm_sq = dot_product(&oja.v[j * COLS], &oja.v[j * COLS], COLS);
     printf("||v%d|| = %.4f\n", j, sqrt(nrm_sq));
   }
 
@@ -229,7 +302,7 @@ int main() {
   printf("\n Pairwise Orthogonality Check (Dot Products)\n");
   for (int j = 0; j < K; j++) {
     for (int b = j + 1; b < K; b++) {
-      double dot_prod = dot_product(oja.v[j], oja.v[b], COLS);
+      double dot_prod = dot_product(&oja.v[j * COLS], &oja.v[b * COLS], COLS);
       printf("v%d . v%d = %11.4e\n", j, b, dot_prod);
     }
   }
@@ -238,10 +311,13 @@ int main() {
   printf("Components Matrix:\n");
   for (int j = 0; j < K; j++) {
     for (int i = 0; i < COLS; i++)
-      printf("%7.3f ", oja.v[j][i]);
+      printf("%7.3f ", oja.v[j * COLS + i]);
     printf("\n");
   }
 
   printf("\nNumber of samples processed: %ld\n", my_stats.n);
+
+  oja_free(&oja);
+  rmean_free(&my_stats);
   return 0;
 }
