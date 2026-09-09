@@ -8,7 +8,7 @@
 #define K 3
 
 // Helper function i will use loop unrolling just to have it ready for rwds
-double dot_product(const double *v1, const double *v2, size_t n) {
+double dot_product(const double* v1, const double* v2, size_t n) {
   double sum0 = 0.0, sum1 = 0.0, sum2 = 0.0, sum3 = 0.0;
   size_t i = 0;
   double t_sum = 0.0;
@@ -32,7 +32,7 @@ double dot_product(const double *v1, const double *v2, size_t n) {
 }
 
 // z-normalization: one vector, one length
-void znorm_row(double *x, int m) {
+void znorm_row(double* x, int m) {
   double sum = 0.0;
   double variance = 0.0;
   double mean, std_dev;
@@ -58,23 +58,21 @@ void znorm_row(double *x, int m) {
 /* ---------------- RunningMean: heap-allocated ---------------- */
 
 typedef struct {
-  double *mean; /* m doubles */
+  double* mean; /* m doubles */
   long n;
   int m;
 } RunningMean;
 
-int rmean_init(RunningMean *rm, int m) {
-  if (m <= 0)
-    return -1;
+int rmean_init(RunningMean* rm, int m) {
+  if (m <= 0) return -1;
   rm->mean = calloc((size_t)m, sizeof(double));
-  if (!rm->mean)
-    return -1;
+  if (!rm->mean) return -1;
   rm->n = 0;
   rm->m = m;
   return 0;
 }
 
-void rmean_free(RunningMean *rm) {
+void rmean_free(RunningMean* rm) {
   free(rm->mean);
   rm->mean = NULL;
   rm->n = 0;
@@ -82,31 +80,28 @@ void rmean_free(RunningMean *rm) {
 }
 
 // running mean
-void rmean_update(RunningMean *rm, const double *x) {
+void rmean_update(RunningMean* rm, const double* x) {
   int m = rm->m;
   rm->n++;
-  for (int i = 0; i < m; i++)
-    rm->mean[i] += (x[i] - rm->mean[i]) / rm->n;
+  for (int i = 0; i < m; i++) rm->mean[i] += (x[i] - rm->mean[i]) / rm->n;
 }
 
 /* ---------------- OjaPCA: heap-allocated ---------------- */
 
 typedef struct {
-  double *v; /* k*m doubles: the basis, row j starts at v[j*m] */
-  double *u; /* m doubles: scratch buffer for the deflation   */
+  double* v; /* k*m doubles: the basis, row j starts at v[j*m] */
+  double* u; /* m doubles: scratch buffer for the deflation   */
   int k, m;
 } OjaPCA;
 
-int oja_init(OjaPCA *p, int k, int m) {
-  if (k > m || k <= 0 || m <= 0)
-    return -1;
+int oja_init(OjaPCA* p, int k, int m) {
+  if (k > m || k <= 0 || m <= 0) return -1;
 
   p->k = k;
   p->m = m;
 
   p->v = calloc((size_t)k * m, sizeof(double));
-  if (!p->v)
-    return -1;
+  if (!p->v) return -1;
 
   p->u = calloc((size_t)m, sizeof(double));
   if (!p->u) {
@@ -116,13 +111,12 @@ int oja_init(OjaPCA *p, int k, int m) {
   }
 
   /* seeds e1, e2, ... : one on the diagonal of each row */
-  for (int j = 0; j < k; j++)
-    p->v[j * m + j] = 1.0;
+  for (int j = 0; j < k; j++) p->v[j * m + j] = 1.0;
 
   return 0;
 }
 
-void oja_free(OjaPCA *p) {
+void oja_free(OjaPCA* p) {
   free(p->v);
   p->v = NULL;
   free(p->u);
@@ -131,15 +125,14 @@ void oja_free(OjaPCA *p) {
   p->m = 0;
 }
 
-void oja_update(OjaPCA *p, const double *xc, double lr) {
+void oja_update(OjaPCA* p, const double* xc, double lr) {
   int k = p->k, m = p->m;
-  double *u = p->u;
+  double* u = p->u;
 
-  for (int i = 0; i < m; i++)
-    u[i] = xc[i];
+  for (int i = 0; i < m; i++) u[i] = xc[i];
 
   for (int j = 0; j < k; j++) {
-    double *vj = &p->v[j * m];
+    double* vj = &p->v[j * m];
     double y = dot_product(u, vj, m);
 
     // Oja rule
@@ -156,18 +149,18 @@ void oja_update(OjaPCA *p, const double *xc, double lr) {
   }
 }
 
-void gram_schmidt(OjaPCA *p) {
+void gram_schmidt(OjaPCA* p) {
   int k = p->k, m = p->m;
 
   // 1. Εξωτερικό loop: Διατρέχει κάθε διάνυσμα που θέλουμε να
   // ορθοκανονικοποιήσουμε
   for (int j = 0; j < k; j++) {
-    double *vj = &p->v[j * m];
+    double* vj = &p->v[j * m];
 
     // 2. Εσωτερικό loop: "Καθαρίζει" το τρέχον v[j] από ΟΛΑ τα προηγούμενα
     // v[p_idx]
     for (int p_idx = 0; p_idx < j; p_idx++) {
-      double *vp = &p->v[p_idx * m];
+      double* vp = &p->v[p_idx * m];
       // Υπολογισμός της προβολής (dot) - ΠΡΕΠΕΙ να είναι μέσα στο loop
       double d = dot_product(vj, vp, m);
 
@@ -191,14 +184,40 @@ void gram_schmidt(OjaPCA *p) {
   }
 }
 
-int cmp_double(const void *a, const void *b) {
-  double x = *(const double *)a; // diref as double
-  double y = *(const double *)b;
-  if (x < y)
-    return -1;
-  if (x > y)
-    return 1;
+int cmp_double(const void* a, const void* b) {
+  double x = *(const double*)a;  // diref as double
+  double y = *(const double*)b;
+  if (x < y) return -1;
+  if (x > y) return 1;
   return 0;
+}
+
+void compute_breakpoints(const double* proj, int n, int k, int alphabet,
+                         double* bkpt) {
+  double* col = calloc((size_t)n, sizeof(double));
+  if (!col) return;
+  double target_depth = (double)n / alphabet;
+  for (int j = 0; j < k; j++) {
+    for (int r = 0; r < n; r++) col[r] = proj[r * k + j];
+    qsort(col, n, sizeof(double), cmp_double);
+    double bin_index = 0.0;
+    for (int bp = 0; bp < alphabet - 1; bp++) {
+      bin_index += target_depth;
+      bkpt[j * alphabet + bp] = col[(int)bin_index];
+      printf("β%d=%9.6f\n", bp, bkpt[j * alphabet + bp]);
+    }
+    bkpt[j * alphabet + (alphabet - 1)] = DBL_MAX;
+  }
+  free(col);
+}
+
+void digitize(const double* y, const double* bkpt, int k, int alphabet,
+              int* word) {
+  for (int j = 0; j < k; j++) {
+    int s = 0;
+    while (y[j] > bkpt[j * alphabet + s]) s++;
+    word[j] = s;
+  }
 }
 
 int main() {
@@ -244,49 +263,36 @@ int main() {
   double xc[COLS];
   for (int epoch = 0; epoch < 200; epoch++) {
     for (int r = 0; r < ROWS; r++) {
-      for (int i = 0; i < COLS; i++)
-        xc[i] = data[r][i] - my_stats.mean[i];
+      for (int i = 0; i < COLS; i++) xc[i] = data[r][i] - my_stats.mean[i];
       oja_update(&oja, xc, 0.01);
     }
     gram_schmidt(&oja);
   }
-  double proj[ROWS][K];
+
+  double* proj = calloc((size_t)ROWS * K, sizeof(double));
 
   for (int r = 0; r < ROWS; r++) {
     for (int i = 0; i < COLS; i++) {
       xc[i] = data[r][i] - my_stats.mean[i];
     }
-    proj[r][0] = dot_product(xc, &oja.v[0 * COLS], COLS);
-    proj[r][1] = dot_product(xc, &oja.v[1 * COLS], COLS);
-    proj[r][2] = dot_product(xc, &oja.v[2 * COLS], COLS);
+    proj[r * K + 0] = dot_product(xc, &oja.v[0 * COLS], COLS);
+    proj[r * K + 1] = dot_product(xc, &oja.v[1 * COLS], COLS);
+    proj[r * K + 2] = dot_product(xc, &oja.v[2 * COLS], COLS);
 
-    printf("%2d %7.3f %7.3f %7.3f\n", r, proj[r][0], proj[r][1], proj[r][2]);
+    printf("%2d %7.3f %7.3f %7.3f\n", r, proj[r * K + 0], proj[r * K + 1],
+           proj[r * K + 2]);
   }
 
-  double col[ROWS];
-  double target_depth = (double)ROWS / 4;
-  double bkpt[K][4];
-  for (int j = 0; j < K; j++) {
-    for (int r = 0; r < ROWS; r++)
-      col[r] = proj[r][j];
-    qsort(col, ROWS, sizeof(double), cmp_double);
-    double bin_index = 0.0;
-    for (int bp = 0; bp < 3; bp++) {
-      bin_index += target_depth;
-      bkpt[j][bp] = col[(int)bin_index];
-      printf("β%d=%9.6f\n", bp, bkpt[j][bp]);
-    }
-    bkpt[j][3] = DBL_MAX;
-  }
+  double bkpt[K * 4];
+  compute_breakpoints(proj, ROWS, K, 4, bkpt);
 
   printf("\nWords:\n");
   for (int r = 0; r < ROWS; r++) {
     printf("%2d  ", r);
+    int word[K];
+    digitize(&proj[r * K], bkpt, K, 4, word);
     for (int j = 0; j < K; j++) {
-      int s = 0;
-      while (proj[r][j] > bkpt[j][s])
-        s++;
-      printf("%c", 'a' + s); // 97-100 ASCII
+      printf("%c", 'a' + word[j]);  // 97-100 ASCII
     }
     printf("\n");
   }
@@ -310,8 +316,7 @@ int main() {
 
   printf("Components Matrix:\n");
   for (int j = 0; j < K; j++) {
-    for (int i = 0; i < COLS; i++)
-      printf("%7.3f ", oja.v[j * COLS + i]);
+    for (int i = 0; i < COLS; i++) printf("%7.3f ", oja.v[j * COLS + i]);
     printf("\n");
   }
 
@@ -319,5 +324,6 @@ int main() {
 
   oja_free(&oja);
   rmean_free(&my_stats);
+  free(proj);
   return 0;
 }
