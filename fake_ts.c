@@ -192,6 +192,12 @@ int cmp_double(const void* a, const void* b) {
   return 0;
 }
 
+void project(const OjaPCA* p, const double* xc, double* y) {
+  for (int j = 0; j < p->k; j++) {
+    y[j] = dot_product(xc, &p->v[j * p->m], p->m);
+  }
+}
+
 void compute_breakpoints(const double* proj, int n, int k, int alphabet,
                          double* bkpt) {
   double* col = calloc((size_t)n, sizeof(double));
@@ -275,10 +281,7 @@ int main() {
     for (int i = 0; i < COLS; i++) {
       xc[i] = data[r][i] - my_stats.mean[i];
     }
-    proj[r * K + 0] = dot_product(xc, &oja.v[0 * COLS], COLS);
-    proj[r * K + 1] = dot_product(xc, &oja.v[1 * COLS], COLS);
-    proj[r * K + 2] = dot_product(xc, &oja.v[2 * COLS], COLS);
-
+    project(&oja, xc, &proj[r * K]);
     printf("%2d %7.3f %7.3f %7.3f\n", r, proj[r * K + 0], proj[r * K + 1],
            proj[r * K + 2]);
   }
