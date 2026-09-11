@@ -254,79 +254,81 @@ int main() {
     return 1;
   }
 
-  for (int i = 0; i < ROWS; i++) {
-    znorm_row(data[i], COLS);
-    rmean_update(&my_stats, data[i]);
-  }
-
   OjaPCA oja;
   if (oja_init(&oja, K, COLS) != 0) {
     fprintf(stderr, "oja_init failed\n");
     rmean_free(&my_stats);
     return 1;
   }
-
   double xc[COLS];
-  for (int epoch = 0; epoch < 200; epoch++) {
-    for (int r = 0; r < ROWS; r++) {
-      for (int i = 0; i < COLS; i++) xc[i] = data[r][i] - my_stats.mean[i];
-      oja_update(&oja, xc, 0.01);
-    }
-    gram_schmidt(&oja);
+  int W = 10;  // μέγεθος παραθύρου προετοιμασίας (warmup)
+  int P = 5;   // περίοδος Gram-Schmidt
+  int warm_count = 0;
+  int have_bkpt = 0;
+  long n_seen = 0;
+
+  double y[K];         // προβολή του τρέχοντος παραθύρου
+  int word[K];         // παραγόμενη λέξη
+  double bkpt[K * 4];  // breakpoints (K x ALPHABET)
+  double* warmup_proj = calloc((size_t)W * K, sizeof(double));
+
+  if (!warmup_proj) {
+    rmean_free(&my_stats);
+    oja_free(&oja);
+    return 1;
   }
-
-  double* proj = calloc((size_t)ROWS * K, sizeof(double));
-
   for (int r = 0; r < ROWS; r++) {
+    n_seen++;
+
+    // 1. Κανονικοποίηση παραθύρου επιτόπου
+    znorm_row(data[r], COLS);
+
+    // 2. Ενημέρωση στατιστικών μέσης τιμής
+    rmean_update(&my_stats, data[r]);
+
+    // 3. Κεντράρισμα παραθύρου
     for (int i = 0; i < COLS; i++) {
       xc[i] = data[r][i] - my_stats.mean[i];
     }
-    project(&oja, xc, &proj[r * K]);
-    printf("%2d %7.3f %7.3f %7.3f\n", r, proj[r * K + 0], proj[r * K + 1],
-           proj[r * K + 2]);
-  }
 
-  double bkpt[K * 4];
-  compute_breakpoints(proj, ROWS, K, 4, bkpt);
+    // 4. Online εκπαίδευση PCA (Oja)
+    oja_update(&oja, xc, 0.01);
 
-  printf("\nWords:\n");
-  for (int r = 0; r < ROWS; r++) {
+    // 5. Περιοδική ορθοκανονικοποίηση ανά P βήματα
+    if (n_seen % P == 0) {
+      gram_schmidt(&oja);
+    }
+
+    // 6. Προβολή του τρέχοντος παραθύρου στις συνιστώσες -> y
+    project(&oja, xc, y);
+
+    // 7. Φάση Warmup (συλλογή δειγμάτων για τον υπολογισμό των breakpoints)
+    if (!have_bkpt) {
+      for (int j = 0; j < K; j++) {
+        warmup_proj[warm_count * K + j] = y[j];
+      }
+      warm_count++;
+
+      if (warm_count == W) {
+        compute_breakpoints(warmup_proj, W, K, 4, bkpt);
+        have_bkpt = 1;
+        free(warmup_proj);
+        warmup_proj = NULL;
+      }
+      continue;  // Κατά το warmup δεν παράγουμε ακόμα λέξεις
+    }
+
+    // 8. Streaming Παραγωγή Λέξης (μόλις έχουμε breakpoints)
+    digitize(y, bkpt, K, 4, word);
+
     printf("%2d  ", r);
-    int word[K];
-    digitize(&proj[r * K], bkpt, K, 4, word);
     for (int j = 0; j < K; j++) {
-      printf("%c", 'a' + word[j]);  // 97-100 ASCII
+      printf("%c", 'a' + word[j]);
     }
     printf("\n");
   }
-
-  // v Magnitudes
-  printf("Vector Magnitudes\n");
-  for (int j = 0; j < K; j++) {
-    double nrm_sq = dot_product(&oja.v[j * COLS], &oja.v[j * COLS], COLS);
-    printf("||v%d|| = %.4f\n", j, sqrt(nrm_sq));
-  }
-
-  // Orthogonality check
-  printf("\n Pairwise Orthogonality Check (Dot Products)\n");
-  for (int j = 0; j < K; j++) {
-    for (int b = j + 1; b < K; b++) {
-      double dot_prod = dot_product(&oja.v[j * COLS], &oja.v[b * COLS], COLS);
-      printf("v%d . v%d = %11.4e\n", j, b, dot_prod);
-    }
-  }
-  printf("\n");
-
-  printf("Components Matrix:\n");
-  for (int j = 0; j < K; j++) {
-    for (int i = 0; i < COLS; i++) printf("%7.3f ", oja.v[j * COLS + i]);
-    printf("\n");
-  }
-
-  printf("\nNumber of samples processed: %ld\n", my_stats.n);
-
+  if (warmup_proj) free(warmup_proj);
   oja_free(&oja);
   rmean_free(&my_stats);
-  free(proj);
   return 0;
 }
