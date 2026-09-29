@@ -2,14 +2,15 @@ CC      = gcc
 CFLAGS  = -O2 -Wall -Wextra -Wshadow -std=c11
 DBGFLAGS= -g -O0 -Wall -Wextra -Wshadow -std=c11 -fsanitize=address,undefined
 LDLIBS  = -lm
-SRC     = spartan.c main.c stream.c
+SRC     = spartan.c stream.c config.c main.c
+HDR     = spartan.h stream.h config.h
 
 all: spartan_toy
 
-spartan_toy: $(SRC) spartan.h
+spartan_toy: $(SRC) $(HDR)
 	$(CC) $(CFLAGS) $(SRC) -o $@ $(LDLIBS)
 
-debug: $(SRC) spartan.h
+debug: $(SRC) $(HDR)
 	$(CC) $(DBGFLAGS) $(SRC) -o spartan_toy_dbg $(LDLIBS)
 
 clean:
