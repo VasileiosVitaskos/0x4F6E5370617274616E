@@ -13,7 +13,7 @@
 #define NUM_REPEATS 10
 #define STREAM_LEN (TOTAL_ELEMENTS * NUM_REPEATS)
 
-int main(void) {
+int main(int argc, char* argv[]) {
   // 20 short multivariate/univariate series used as source patterns
   const double data[ROWS][COLS] = {{1.0, 2.1, 2.9, 4.2, 5.0, 6.1, 6.9, 8.0},
                                    {0.8, 1.9, 3.1, 3.9, 5.2, 5.9, 7.1, 7.9},
@@ -47,7 +47,7 @@ int main(void) {
   Config cfg = config_default_mv(K, 1, COLS);
 
   // Default exit code and safe initialization of pointers and state
-  int rc = 1;
+  int rc = EXIT_FAILURE;
   double* win = NULL;
   double* xc = NULL;
   double* y = NULL;
@@ -90,9 +90,18 @@ int main(void) {
     goto cleanup;
   }
 
-  if (stream_init_array(&stream, flat_data, STREAM_LEN, cfg.d, cfg.m_time,
-                        cfg.stride) != 0) {
-    fprintf(stderr, "Error: stream_init_array failed\n");
+  // Initialize input stream from file argument or default memory array
+  int stream_rc = 0;
+  if (argc > 1) {
+    stream_rc =
+        stream_init_file(&stream, argv[1], cfg.d, cfg.m_time, cfg.stride);
+  } else {
+    stream_rc = stream_init_array(&stream, flat_data, STREAM_LEN, cfg.d,
+                                  cfg.m_time, cfg.stride);
+  }
+
+  if (stream_rc != 0) {
+    fprintf(stderr, "Error: Failed to initialize stream source\n");
     goto cleanup;
   }
 
@@ -191,10 +200,17 @@ int main(void) {
     printf("\n");
   }
 
+  // Check if the stream was aborted due to data corruption or read failure
+  if (stream.err) {
+    fprintf(stderr,
+            "Error: Stream aborted due to invalid formatting or I/O failure\n");
+    goto cleanup;
+  }
+
   fprintf(stderr, "worst drift before cleanup: overlap %.3e, length %.3e\n",
           worst_dot_seen, worst_len_seen);
 
-  rc = 0;
+  rc = EXIT_SUCCESS;
 
 cleanup:
   free(win);
