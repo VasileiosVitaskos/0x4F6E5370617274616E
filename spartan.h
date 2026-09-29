@@ -32,40 +32,44 @@ typedef struct {
   int gs_period; /* re-straighten the directions every this many windows */
   int warmup;    /* windows collected before the cut points are fixed */
   int total_bits; /* bit budget for one whole word */
-  double lambda;  /* how strongly the bit split is pulled back to a reference */
+  double lambda;
+  int d;
+  int m_time;
 } Config;
 
 Config config_default(int k, int m);
 
+Config config_default_mv(int k, int d, int m_time);
+
 /* ---------------- basic maths ---------------- */
 
-double dot_product(const double *v1, const double *v2, size_t n);
-void znorm_row(double *x, int m);
+double dot_product(const double* v1, const double* v2, size_t n);
+void znorm_row(double* x, int m);
 
 /* ---------------- running average of the stream ---------------- */
 
 typedef struct {
-  double *mean;
+  double* mean;
   long n;
   int m;
 } RunningMean;
 
-int rmean_init(RunningMean *rm, int m);
-void rmean_free(RunningMean *rm);
-void rmean_update(RunningMean *rm, const double *x);
+int rmean_init(RunningMean* rm, int m);
+void rmean_free(RunningMean* rm);
+void rmean_update(RunningMean* rm, const double* x);
 
 /* ---------------- the PCA directions ---------------- */
 
 typedef struct {
-  double *v; /* k rows of m numbers, flat; row j starts at v[j*m] */
-  double *u; /* scratch room, m numbers */
+  double* v; /* k rows of m numbers, flat; row j starts at v[j*m] */
+  double* u; /* scratch room, m numbers */
   int k, m;
 } OjaPCA;
 
-int oja_init(OjaPCA *p, int k, int m);
-void oja_free(OjaPCA *p);
-void oja_update(OjaPCA *p, const double *xc, double lr);
-void gram_schmidt(OjaPCA *p);
+int oja_init(OjaPCA* p, int k, int m);
+void oja_free(OjaPCA* p);
+void oja_update(OjaPCA* p, const double* xc, double lr);
+void gram_schmidt(OjaPCA* p);
 
 /* How far the directions have drifted from being clean and separate.
  *   max_dot = biggest overlap between any two directions; 0 is perfect
@@ -75,17 +79,17 @@ void gram_schmidt(OjaPCA *p);
  * BEFORE straightening, which is when the drift is at its worst.
  * Either pointer may be NULL.
  */
-void oja_orthonormality_error(const OjaPCA *p, double *max_dot,
-                              double *max_len);
+void oja_orthonormality_error(const OjaPCA* p, double* max_dot,
+                              double* max_len);
 
 /* ---------------- from numbers to letters ---------------- */
 
-void project(const OjaPCA *p, const double *xc, double *y);
-void estimate_eigenvalues(const double *proj, int n, int k, double *ev);
-void compute_breakpoints(const double *proj, int n, int k, const int *alphabet,
-                         double *bkpt);
-void digitize(const double *y, const double *bkpt, int k, const int *alphabet,
-              int *word);
+void project(const OjaPCA* p, const double* xc, double* y);
+void estimate_eigenvalues(const double* proj, int n, int k, double* ev);
+void compute_breakpoints(const double* proj, int n, int k, const int* alphabet,
+                         double* bkpt);
+void digitize(const double* y, const double* bkpt, int k, const int* alphabet,
+              int* word);
 
 /* ---------------- splitting the bit budget ---------------- */
 
@@ -101,12 +105,12 @@ void digitize(const double *y, const double *bkpt, int k, const int *alphabet,
  *
  * Returns 0 on success, -1 if the inputs make no sense or memory runs out.
  */
-int daa_allocate(const double *ev, int k, int total_bits, double lamda,
-                 const int *ref_bits, int *bits, double *score);
+int daa_allocate(const double* ev, int k, int total_bits, double lamda,
+                 const int* ref_bits, int* bits, double* score);
 
 /* How good is a split we already have, judged with these importances?
    Compare it against the best split to see if changing is worth it. */
-double daa_score(const double *ev, int k, int total_bits, double lamda,
-                 const int *ref_bits, const int *bits);
+double daa_score(const double* ev, int k, int total_bits, double lamda,
+                 const int* ref_bits, const int* bits);
 
 #endif /* SPARTAN_H */

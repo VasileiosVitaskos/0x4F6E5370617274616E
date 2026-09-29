@@ -2,7 +2,7 @@ CC      = gcc
 CFLAGS  = -O2 -Wall -Wextra -Wshadow -std=c11
 DBGFLAGS= -g -O0 -Wall -Wextra -Wshadow -std=c11 -fsanitize=address,undefined
 LDLIBS  = -lm
-SRC     = spartan.c main.c
+SRC     = spartan.c main.c stream.c
 
 all: spartan_toy
 
