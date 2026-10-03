@@ -113,4 +113,7 @@ int daa_allocate(const double* ev, int k, int total_bits, double lamda,
 double daa_score(const double* ev, int k, int total_bits, double lamda,
                  const int* ref_bits, const int* bits);
 
+double daa_gap(const double *ev, int k, int total_bits, double lamda,
+               const int *bits);
+
 #endif /* SPARTAN_H */

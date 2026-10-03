@@ -387,6 +387,46 @@ int daa_allocate(const double* ev, int k, int total_bits, double lamda,
   return 0;
 }
 
+static double position_gain(int x, double ev_value, int ref_bit, double lamda) {
+  return x * ev_value + regularization_term(x, ev_value, ref_bit, lamda);
+}
+
+double daa_gap(const double *ev, int k, int total_bits, double lamda,
+               const int *bits) {
+  int ref_bit = total_bits / k;
+  int min_bit = 0;
+  int max_bit = total_bits - (k - 1) * min_bit;
+  int MAX_BITS = __builtin_ctz(MAX_ALPHABET);
+  if (max_bit > MAX_BITS)
+    max_bit = MAX_BITS;
+  double best_bid = -DBL_MAX;
+  double best_ask = DBL_MAX;
+  for (int j = 0; j < k; j++) {
+    double cur_gain = position_gain(bits[j], ev[j], ref_bit, lamda);
+    if (bits[j] < max_bit) {
+      double up = position_gain(bits[j] + 1, ev[j], ref_bit, lamda) - cur_gain;
+      if (up > best_bid)
+        best_bid = up;
+    }
+    if (bits[j] > min_bit) {
+      double down =
+          cur_gain - position_gain(bits[j] - 1, ev[j], ref_bit, lamda);
+
+      if (down < best_ask)
+        best_ask = down;
+    }
+  }
+
+  if (best_bid == -DBL_MAX || best_ask == DBL_MAX) {
+    return 0.0;
+  }
+
+  double gap = best_bid - best_ask;
+  if (gap <= 0) {
+    return 0;
+  }
+  return gap;
+}
 /* ---------------- settings ---------------- */
 
 Config config_default(int k, int m) { return config_default_mv(k, 1, m); }
