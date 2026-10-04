@@ -59,27 +59,30 @@ static double now_seconds(void) {
 
 // Open a destination file, or hand back stdout for "-"; the flag tells the
 // caller whether it owns the handle and must close it
-static FILE* open_sink(const char* path, int* owned) {
+static FILE *open_sink(const char *path, int *owned) {
   *owned = 0;
-  if (strcmp(path, "-") == 0) return stdout;
-  FILE* f = fopen(path, "w");
-  if (f) *owned = 1;
+  if (strcmp(path, "-") == 0)
+    return stdout;
+  FILE *f = fopen(path, "w");
+  if (f)
+    *owned = 1;
   return f;
 }
 
 // Persist the frozen dictionary as data; an analysis script needs exactly this
 // to recompute distances without re-running the C
-static int write_dictionary(const char* path, const Config* cfg,
-                            const double* ev, const int* bits,
-                            const int* alphabet, const double* bkpt) {
-  FILE* f = fopen(path, "w");
+static int write_dictionary(const char *path, const Config *cfg,
+                            const double *ev, const int *bits,
+                            const int *alphabet, const double *bkpt) {
+  FILE *f = fopen(path, "w");
   if (!f) {
     fprintf(stderr, "Error: Cannot write dictionary to '%s'\n", path);
     return -1;
   }
 
   fprintf(f, "pos,alphabet,bits,ev");
-  for (int b = 0; b < MAX_ALPHABET; b++) fprintf(f, ",bkpt%d", b);
+  for (int b = 0; b < MAX_ALPHABET; b++)
+    fprintf(f, ",bkpt%d", b);
   fprintf(f, "\n");
 
   for (int j = 0; j < cfg->k; j++) {
@@ -87,9 +90,9 @@ static int write_dictionary(const char* path, const Config* cfg,
     for (int b = 0; b < MAX_ALPHABET; b++) {
       double v = bkpt[j * MAX_ALPHABET + b];
       if (b >= alphabet[j])
-        fprintf(f, ",");  // slot unused at this position
+        fprintf(f, ","); // slot unused at this position
       else if (v == DBL_MAX)
-        fprintf(f, ",inf");  // the wall the symbol search always stops at
+        fprintf(f, ",inf"); // the wall the symbol search always stops at
       else
         fprintf(f, ",%.17g", v);
     }
@@ -100,7 +103,7 @@ static int write_dictionary(const char* path, const Config* cfg,
   return 0;
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   Config cfg;
   RunOptions run;
 
@@ -110,25 +113,26 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
   if (argc == 2) {
-    if (config_load(argv[1], &cfg, &run) != 0) return EXIT_FAILURE;
+    if (config_load(argv[1], &cfg, &run) != 0)
+      return EXIT_FAILURE;
   } else {
     config_defaults(&cfg, &run);
   }
 
   // Default exit code and safe initialization of pointers and state
   int rc = EXIT_FAILURE;
-  double* demo_flat = NULL;
-  double* win = NULL;
-  double* xc = NULL;
-  double* y = NULL;
-  int* word = NULL;
-  double* bkpt = NULL;
-  double* warmup_proj = NULL;
-  double* ev = NULL;
-  int* bits = NULL;
-  int* alphabet_arr = NULL;
+  double *demo_flat = NULL;
+  double *win = NULL;
+  double *xc = NULL;
+  double *y = NULL;
+  int *word = NULL;
+  double *bkpt = NULL;
+  double *warmup_proj = NULL;
+  double *ev = NULL;
+  int *bits = NULL;
+  int *alphabet_arr = NULL;
 
-  FILE* out = NULL;
+  FILE *out = NULL;
   int out_owned = 0;
 
   RunningMean my_stats = {0};
@@ -156,7 +160,8 @@ int main(int argc, char* argv[]) {
   ev = calloc((size_t)cfg.k, sizeof(double));
   bits = calloc((size_t)cfg.k, sizeof(int));
   alphabet_arr = calloc((size_t)cfg.k, sizeof(int));
-  if (use_demo) demo_flat = calloc(DEMO_LEN, sizeof(double));
+  if (use_demo)
+    demo_flat = calloc(DEMO_LEN, sizeof(double));
 
   if (!win || !xc || !y || !word || !bkpt || !warmup_proj || !ev || !bits ||
       !alphabet_arr || (use_demo && !demo_flat)) {
@@ -171,9 +176,8 @@ int main(int argc, char* argv[]) {
   }
 
   if (oja_init(&oja, cfg.k, cfg.m) != 0) {
-    fprintf(stderr,
-            "Error: oja_init failed, components must not exceed "
-            "channels * window\n");
+    fprintf(stderr, "Error: oja_init failed, components must not exceed "
+                    "channels * window\n");
     goto cleanup;
   }
 
@@ -204,7 +208,8 @@ int main(int argc, char* argv[]) {
   }
 
   fprintf(out, "window");
-  for (int j = 0; j < cfg.k; j++) fprintf(out, ",sym%d", j);
+  for (int j = 0; j < cfg.k; j++)
+    fprintf(out, ",sym%d", j);
   fprintf(out, "\n");
 
   // Main stream processing loop; reading and computing are timed separately so
@@ -213,7 +218,8 @@ int main(int argc, char* argv[]) {
     double t0 = now_seconds();
     int got = stream_next(&stream, win);
     t_io += now_seconds() - t0;
-    if (!got) break;
+    if (!got)
+      break;
 
     t0 = now_seconds();
     n_seen++;
@@ -236,8 +242,10 @@ int main(int argc, char* argv[]) {
     if (n_seen % cfg.gs_period == 0) {
       double d_err, l_err;
       oja_orthonormality_error(&oja, &d_err, &l_err);
-      if (d_err > worst_dot_seen) worst_dot_seen = d_err;
-      if (l_err > worst_len_seen) worst_len_seen = l_err;
+      if (d_err > worst_dot_seen)
+        worst_dot_seen = d_err;
+      if (l_err > worst_len_seen)
+        worst_len_seen = l_err;
 
       gram_schmidt(&oja);
     }
@@ -267,15 +275,14 @@ int main(int argc, char* argv[]) {
         // Compute alphabet sizes from allocated bit budget
         int max_a = 0;
         for (int j = 0; j < cfg.k; j++) {
+          if (bits[j] > MAX_BITS)
+            bits[j] = MAX_BITS;
+          fprintf(stderr,
+                  "Warning: Position %d wanted %d bits, clamped to %d\n", j,
+                  bits[j], MAX_BITS);
           alphabet_arr[j] = 1 << bits[j];
-          if (alphabet_arr[j] > MAX_ALPHABET) {
-            fprintf(stderr,
-                    "Warning: Position %d wanted alphabet %d, clamped to %d\n",
-                    j, alphabet_arr[j], MAX_ALPHABET);
-            alphabet_arr[j] = MAX_ALPHABET;
-            bits[j] = 31 - __builtin_clz((unsigned)MAX_ALPHABET);
-          }
-          if (alphabet_arr[j] > max_a) max_a = alphabet_arr[j];
+          if (alphabet_arr[j] > max_a)
+            max_a = alphabet_arr[j];
         }
 
         // Equi-depth cut points are noise when a bin holds only a sample or two
@@ -290,11 +297,14 @@ int main(int argc, char* argv[]) {
 
         // Print warmup configuration diagnostics
         fprintf(stderr, "ev       =");
-        for (int j = 0; j < cfg.k; j++) fprintf(stderr, " %.4f", ev[j]);
+        for (int j = 0; j < cfg.k; j++)
+          fprintf(stderr, " %.4f", ev[j]);
         fprintf(stderr, "\nbits     =");
-        for (int j = 0; j < cfg.k; j++) fprintf(stderr, " %d", bits[j]);
+        for (int j = 0; j < cfg.k; j++)
+          fprintf(stderr, " %d", bits[j]);
         fprintf(stderr, "\nalphabet =");
-        for (int j = 0; j < cfg.k; j++) fprintf(stderr, " %d", alphabet_arr[j]);
+        for (int j = 0; j < cfg.k; j++)
+          fprintf(stderr, " %d", alphabet_arr[j]);
         fprintf(stderr, "\nscore    = %.6f\n", score);
 
         // Persist the frozen dictionary for downstream analysis
@@ -360,7 +370,8 @@ int main(int argc, char* argv[]) {
   rc = EXIT_SUCCESS;
 
 cleanup:
-  if (out && out_owned) fclose(out);
+  if (out && out_owned)
+    fclose(out);
   free(demo_flat);
   free(win);
   free(xc);
