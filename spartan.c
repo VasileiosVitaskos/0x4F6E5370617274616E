@@ -9,7 +9,7 @@
 #include <float.h>
 #include <math.h>
 #include <stdlib.h>
-
+#include <string.h>
 /* ---------------- basic maths ---------------- */
 
 double dot_product(const double *v1, const double *v2, size_t n) {
@@ -80,6 +80,95 @@ void rmean_update(RunningMean *rm, const double *x) {
   rm->n++;
   for (int i = 0; i < m; i++)
     rm->mean[i] += (x[i] - rm->mean[i]) / rm->n;
+}
+
+void pring_free(ProjRing *r) {
+  if (!r)
+    return;
+  free(r->buf);
+  free(r->s1);
+  free(r->s2);
+  memset(r, 0, sizeof(*r));
+}
+
+int pring_init(ProjRing *r, int cap, int k) {
+  if (!r || cap <= 2 || k < 1)
+    return -1;
+  memset(r, 0, sizeof(*r));
+  r->buf = calloc((size_t)cap * k, sizeof(double));
+  r->s1 = calloc((size_t)k, sizeof(double));
+  r->s2 = calloc((size_t)k, sizeof(double));
+  if (!r->buf || !r->s1 || !r->s2) {
+    pring_free(r);
+    return -1;
+  }
+  r->cap = cap;
+  r->k = k;
+  return 0;
+}
+
+void pring_push(ProjRing *r, const double *y) {
+
+  double *row = &r->buf[(size_t)r->cursor * r->k];
+
+  if (r->count == r->cap) {
+    for (int j = 0; j < r->k; j++) {
+      double old_val = row[j];
+      r->s1[j] -= old_val;
+      r->s2[j] -= old_val * old_val;
+    }
+  } else {
+    r->count++;
+  }
+
+  for (int j = 0; j < r->k; j++) {
+    row[j] = y[j];
+    r->s1[j] += y[j];
+    r->s2[j] += y[j] * y[j];
+  }
+
+  if (++r->cursor == r->cap) {
+    r->cursor = 0;
+  }
+}
+
+void pring_importances(const ProjRing *r, double *ev) {
+  int n = r->count;
+  double total = 0.0;
+  for (int j = 0; j < r->k; j++) {
+    double mean = r->s1[j] / n;
+    double var = r->s2[j] / n - mean * mean;
+    if (var < 0.0)
+      var = 0.0;
+
+    ev[j] = var;
+    total += var;
+  }
+  if (total < SPARTAN_EPS) {
+    for (int j = 0; j < r->k; j++)
+      ev[j] = 1.0 / r->k;
+    return;
+  }
+  for (int j = 0; j < r->k; j++)
+    ev[j] /= total;
+}
+
+void pring_refresh(ProjRing *r) {
+  if (r == NULL) {
+    return;
+  }
+
+  memset(r->s1, 0, (size_t)r->k * sizeof(double));
+  memset(r->s2, 0, (size_t)r->k * sizeof(double));
+
+  for (int i = 0; i < r->count; i++) {
+    const double *row = &r->buf[(size_t)i * r->k];
+    for (int j = 0; j < r->k; j++) {
+      double val = row[j];
+      r->s1[j] += val;
+      r->s2[j] += val * val;
+    }
+  }
 }
 
 /* ---------------- the PCA directions ---------------- */
@@ -309,7 +398,8 @@ int daa_allocate(const double *ev, int k, int total_bits, double lamda,
   int min_bit = 1;
 
   /* Not in the reference, which is Python and would just misbehave: fewer
-     bits than positions means someone would get zero, which is not allowed. */
+     bits than positions means someone would get zero, which is not allowed.
+   */
   if (k <= 0 || N < k)
     return -1;
 
@@ -366,7 +456,8 @@ int daa_allocate(const double *ev, int k, int total_bits, double lamda,
           continue;
 
         /* No position may get more bits than the one before it. Allowed only
-           because the directions arrive sorted from most to least important. */
+           because the directions arrive sorted from most to least important.
+         */
         if (x > alloc[(i - 1) * cols + (j - x)])
           continue;
 
