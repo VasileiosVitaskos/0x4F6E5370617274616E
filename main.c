@@ -133,7 +133,9 @@ int main(int argc, char* argv[]) {
   int out_owned = 0;
 
   RunningMean my_stats = {0};
-  OjaPCA oja = {0};
+  OjaPCA oja_live = {0};
+  OjaPCA oja_frozen = {0};
+  const OjaPCA* symbol_basis = &oja_live;
   WindowStream stream = {0};
   ProjRing ring = {0};
 
@@ -173,7 +175,14 @@ int main(int argc, char* argv[]) {
     goto cleanup;
   }
 
-  if (oja_init(&oja, cfg.k, cfg.m) != 0) {
+  if (oja_init(&oja_live, cfg.k, cfg.m) != 0) {
+    fprintf(stderr,
+            "Error: oja_init failed, components must not exceed "
+            "channels * window\n");
+    goto cleanup;
+  }
+
+  if (oja_init(&oja_frozen, cfg.k, cfg.m) != 0) {
     fprintf(stderr,
             "Error: oja_init failed, components must not exceed "
             "channels * window\n");
@@ -238,20 +247,20 @@ int main(int argc, char* argv[]) {
     }
 
     // Online PCA update via Oja's rule
-    oja_update(&oja, xc, cfg.lr);
+    oja_update(&oja_live, xc, cfg.lr);
 
     // Periodically monitor subspace drift and restore orthonormality
     if (n_seen % cfg.gs_period == 0) {
       double d_err, l_err;
-      oja_orthonormality_error(&oja, &d_err, &l_err);
+      oja_orthonormality_error(&oja_live, &d_err, &l_err);
       if (d_err > worst_dot_seen) worst_dot_seen = d_err;
       if (l_err > worst_len_seen) worst_len_seen = l_err;
 
-      gram_schmidt(&oja);
+      gram_schmidt(&oja_live);
     }
 
     // Project centered window onto the learned PCA subspace
-    project(&oja, xc, y);
+    project(symbol_basis, xc, y);
     pring_push(&ring, y);
 
     // Warmup phase: collect projections to establish DAA bit allocation and
@@ -312,6 +321,19 @@ int main(int argc, char* argv[]) {
           goto cleanup;
         }
 
+        gram_schmidt(&oja_live);
+
+        int frozen_rc = oja_copy_from(&oja_frozen, &oja_live);
+        if (frozen_rc != 0) {
+          fprintf(stderr,
+                  "Error: Could not freeze the basis, oja_copy_from returned "
+                  "%d\n",
+                  frozen_rc);
+          t_algo += now_seconds() - t0;
+          goto cleanup;
+        }
+        symbol_basis = &oja_frozen;
+        pring_reset(&ring);
         have_bkpt = 1;
         free(warmup_proj);
         warmup_proj = NULL;
@@ -388,7 +410,8 @@ cleanup:
   free(ev_live);
   free(bits);
   free(alphabet_arr);
-  oja_free(&oja);
+  oja_free(&oja_live);
+  oja_free(&oja_frozen);
   rmean_free(&my_stats);
   stream_free(&stream);
   pring_free(&ring);

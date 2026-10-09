@@ -88,6 +88,7 @@ void pring_free(ProjRing* r);
 void pring_push(ProjRing* r, const double* y);
 void pring_importances(const ProjRing* r, double* ev);
 void pring_refresh(ProjRing* r);
+void pring_reset(ProjRing* r);
 
 /* ---------------- the PCA directions ---------------- */
 
@@ -101,6 +102,13 @@ int oja_init(OjaPCA* p, int k, int m);
 void oja_free(OjaPCA* p);
 void oja_update(OjaPCA* p, const double* xc, double lr);
 void gram_schmidt(OjaPCA* p);
+
+/* Returns 0 on success, -1 if either pointer is NULL or either side holds no
+ * direction array, and -2 if both are initialised but the shapes differ.
+ * The two are kept apart on purpose: -1 is "you handed me nothing", -2 is
+ * "you handed me the wrong thing", and only the second tells you to go look
+ * at k and m. */
+int oja_copy_from(OjaPCA* dst, const OjaPCA* src);
 
 /* How far the directions have drifted from being clean and separate.
  *   max_dot = biggest overlap between any two directions; 0 is perfect

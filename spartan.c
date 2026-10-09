@@ -166,6 +166,19 @@ void pring_refresh(ProjRing* r) {
   }
 }
 
+void pring_reset(ProjRing* r) {
+  if (r == NULL || r->buf == NULL) {
+    return;
+  }
+  r->cursor = 0;
+  r->count = 0;
+  memset(r->s1, 0, (size_t)r->k * sizeof(double));
+
+  memset(r->s2, 0, (size_t)r->k * sizeof(double));
+
+  memset(r->buf, 0, (size_t)r->cap * (size_t)r->k * sizeof(double));
+}
+
 /* ---------------- the PCA directions ---------------- */
 
 int oja_init(OjaPCA* p, int k, int m) {
@@ -275,6 +288,21 @@ void oja_orthonormality_error(const OjaPCA* p, double* max_dot,
   if (max_len) *max_len = worst_len;
 }
 
+int oja_copy_from(OjaPCA* dst, const OjaPCA* src) {
+  if (!dst || !src) {
+    return -1;
+  }
+  if (!dst->v || !src->v) {
+    return -1;
+  }
+
+  if (dst->k != src->k || dst->m != src->m) {
+    return -2;
+  }
+  size_t total_elements = (size_t)src->k * (size_t)src->m;
+  memcpy(dst->v, src->v, total_elements * sizeof(double));
+  return 0;
+}
 /* ---------------- from numbers to letters ---------------- */
 
 static int cmp_double(const void* a, const void* b) {
@@ -421,7 +449,6 @@ int daa_allocate(const double* ev, int k, int total_bits, double lamda,
   for (int i = 0; i <= k; i++) {
     for (int j = 0; j < cols; j++) {
       DP[i * cols + j] = DAA_UNREACHABLE;
-      ;
       alloc[i * cols + j] = N;
     }
   }
