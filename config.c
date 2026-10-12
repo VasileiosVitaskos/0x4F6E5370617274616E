@@ -102,8 +102,13 @@ static int validate(const Config* c) {
                 "total_bits", c->total_bits);
   if (c->gs_period < 1)
     return fail("gs_period must be at least 1", "gs_period", c->gs_period);
-  if (c->lr <= 0.0) {
-    fprintf(stderr, "config: learning_rate must be positive (got %g)\n", c->lr);
+  if (c->step <= 0.0) {
+    fprintf(stderr, "config: step must be positive (got %g)\n", c->step);
+    return -1;
+  }
+  if (c->beta < 0.0 || c->beta > 1.0) {
+    fprintf(stderr, "config: basis_average must be between 0 and 1 (got %g)\n",
+            c->beta);
     return -1;
   }
   if (c->lambda < 0.0) {
@@ -192,9 +197,21 @@ int config_load(const char* path, Config* cfg, RunOptions* run) {
       if (parse_long(val, &iv) != 0 || iv < INT_MIN || iv > INT_MAX)
         goto bad_value;
       cfg->gs_period = (int)iv;
-    } else if (strcmp(key, "learning_rate") == 0) {
+    } else if (strcmp(key, "step") == 0) {
       if (parse_double(val, &dv) != 0) goto bad_value;
-      cfg->lr = dv;
+      cfg->step = dv;
+    } else if (strcmp(key, "basis_average") == 0) {
+      if (parse_double(val, &dv) != 0) goto bad_value;
+      cfg->beta = dv;
+    } else if (strcmp(key, "learning_rate") == 0) {
+      fprintf(stderr,
+              "config: line %d, 'learning_rate' no longer exists. Use 'step', "
+              "which is divided by the window length internally: the old "
+              "constant silently meant a different thing at every window "
+              "size. 'step = 0.24' is the measured default.\n",
+              lineno);
+      rc = -1;
+      break;
     } else if (strcmp(key, "lambda") == 0) {
       if (parse_double(val, &dv) != 0) goto bad_value;
       cfg->lambda = dv;
@@ -222,6 +239,22 @@ int config_load(const char* path, Config* cfg, RunOptions* run) {
   /* m is derived, never given directly. */
   cfg->m = cfg->d * cfg->m_time;
 
+  /* And so is the Oja step. After the per window z-norm every window has
+     length exactly sqrt(m), so the projections grow with m and the step the
+     rule actually takes is step * m, not step. Dividing here is what makes one
+     setting mean the same thing at every window size.
+
+     IT IS NO ACCIDENT that the old fixed learning_rate = 0.01 looked fine for
+     so long: the built-in demo has window = 8, where it works out to an
+     effective step of 0.08, the quiet end of the range. At window 32 the same
+     number means 0.32, at window 128 it means 1.28, which is far past where
+     the directions stop settling at all. The demo was the one size that
+     flattered it, and every measurement taken there was the easiest case we
+     own. Measured subspace error at window 16 / 32 / 64 / 128 with the old
+     fixed step: 0.135, 0.241, 0.440, 1.136. With step / m and the averaged
+     basis: 0.089, 0.108, 0.161, 0.219. */
+  cfg->lr = cfg->step / cfg->m;
+
   /* Now the dependent defaults, once everything else is known. */
   cfg->stride = (stride == UNSET) ? cfg->m_time : (int)stride;
   cfg->total_bits = (total_bits == UNSET) ? 2 * cfg->k : (int)total_bits;
@@ -240,7 +273,9 @@ void config_dump(FILE* f, const Config* cfg, const RunOptions* run) {
   fprintf(f, "components    = %d\n", cfg->k);
   fprintf(f, "total_bits    = %d\n", cfg->total_bits);
   fprintf(f, "lambda        = %g\n", cfg->lambda);
-  fprintf(f, "learning_rate = %g\n", cfg->lr);
+  fprintf(f, "step          = %g\n", cfg->step);
+  fprintf(f, "basis_average = %g\n", cfg->beta);
+  fprintf(f, "# effective Oja step, step / window = %g\n", cfg->lr);
   fprintf(f, "gs_period     = %d\n", cfg->gs_period);
   fprintf(f, "warmup        = %d\n", cfg->warmup);
   fprintf(f, "words         = %s\n", run->words_out);

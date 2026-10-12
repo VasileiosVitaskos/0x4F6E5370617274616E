@@ -135,8 +135,10 @@ int main(int argc, char* argv[]) {
 
   RunningMean my_stats = {0};
   OjaPCA oja_live = {0};
+  OjaPCA oja_avg = {0};
   OjaPCA oja_frozen = {0};
-  const OjaPCA* symbol_basis = &oja_live;
+
+  const OjaPCA* symbol_basis = &oja_avg;
   WindowStream stream = {0};
   ProjRing ring = {0};
 
@@ -160,7 +162,7 @@ int main(int argc, char* argv[]) {
   warmup_proj = calloc((size_t)cfg.warmup * cfg.k, sizeof(double));
   ev = calloc((size_t)cfg.k, sizeof(double));
   bits = calloc((size_t)cfg.k, sizeof(int));
-  angles_scratch = calloc((size_t)cfg.k * (size_t)cfg.k, sizeof(double));
+  angles_scratch = calloc((size_t)cfg.k * (size_t)(cfg.k + 1), sizeof(double));
   angles = calloc((size_t)cfg.k, sizeof(double));
   alphabet_arr = calloc((size_t)cfg.k, sizeof(int));
   ev_live = calloc((size_t)cfg.k, sizeof(double));
@@ -186,10 +188,13 @@ int main(int argc, char* argv[]) {
     goto cleanup;
   }
 
+  if (oja_init(&oja_avg, cfg.k, cfg.m) != 0) {
+    fprintf(stderr, "Error: oja_init failed for the averaged basis\n");
+    goto cleanup;
+  }
+
   if (oja_init(&oja_frozen, cfg.k, cfg.m) != 0) {
-    fprintf(stderr,
-            "Error: oja_init failed, components must not exceed "
-            "channels * window\n");
+    fprintf(stderr, "Error: oja_init failed for the frozen basis\n");
     goto cleanup;
   }
 

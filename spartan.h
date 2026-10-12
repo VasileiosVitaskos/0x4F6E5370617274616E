@@ -29,6 +29,8 @@ typedef struct {
   int k;         /* directions kept / letters per word */
   int m;         /* numbers per window */
   int stride;    /* how far the window moves each step; == m means no overlap */
+  double step;   /* step size for the PCA directions, BEFORE dividing by m */
+  double beta;   /* how fast the averaged basis forgets; 0 turns it off */
   double lr;     /* how fast the PCA directions move toward the data */
   int gs_period; /* re-straighten the directions every this many windows */
   int warmup;    /* windows collected before the cut points are fixed */
@@ -132,8 +134,12 @@ int svd_values(double* a, int n, double* sv);
  * percent off unit length.
  *
  * frozen, live: same k and same m. Neither is modified.
- * scratch: k*k doubles owned by the caller, OVERWRITTEN. Allocated once by the
- *          caller rather than here, because this runs inside a stream.
+ * scratch: k*(k+1) doubles owned by the caller, OVERWRITTEN. The first k*k
+ *          hold the matrix, the last k are where the singular values land.
+ *          They are kept apart on purpose: letting them share would work
+ *          today and break silently once svd_values also produces factors.
+ *          Allocated once by the caller rather than here, because this runs
+ *          inside a stream.
  * angles:  k doubles, or NULL. In NO particular order, and the order carries
  *          no meaning: a principal angle belongs to the PAIR of subspaces, not
  *          to one component, so "angle 2 is large" says nothing about

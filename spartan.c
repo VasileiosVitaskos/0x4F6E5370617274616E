@@ -304,6 +304,24 @@ int oja_copy_from(OjaPCA* dst, const OjaPCA* src) {
   return 0;
 }
 
+int oja_blend(OjaPCA* dst, const OjaPCA* src, double beta) {
+  if (!dst || !src || !dst->v || !src->v) {
+    return -1;
+  }
+  if (dst->k != src->k || dst->m != src->m) {
+    return -1;
+  }
+  if (!(beta >= 0.0) || !(beta <= 1.0)) {
+    return -1;
+  }
+
+  size_t total = (size_t)src->k * (size_t)src->m;
+  for (size_t i = 0; i < total; i++) {
+    dst->v[i] = (1.0 - beta) * dst->v[i] + beta * src->v[i];
+  }
+  return 0;
+}
+
 /* ---------------- singular values of a small matrix ---------------- */
 
 #define SVD_MAX_SWEEPS 30
@@ -389,7 +407,8 @@ int subspace_angles(const OjaPCA* frozen, const OjaPCA* live, double* scratch,
 
   /* svd_values destroys what it is given, which is why scratch exists and
      why it has to be refilled on every call rather than kept. */
-  int sweeps = svd_values(scratch, k, scratch);
+  double* sv = &scratch[(size_t)k * k];
+  int sweeps = svd_values(scratch, k, sv);
 
   if (sweeps < 0) {
     return -2;
@@ -400,7 +419,7 @@ int subspace_angles(const OjaPCA* frozen, const OjaPCA* live, double* scratch,
      false, so a threshold test downstream would silently never fire. */
   double max_th = 0.0;
   for (int j = 0; j < k; j++) {
-    double co_val = scratch[j];
+    double co_val = sv[j];
     if (co_val > 1.0) co_val = 1.0;
     if (co_val < 0.0) co_val = 0.0;
     double angle_theta = acos(co_val);
@@ -686,12 +705,14 @@ Config config_default_mv(int k, int d, int m_time) {
       .m_time = m_time,
       .m = d * m_time,
       .stride = m_time,
-      .lr = 0.01,
+      .step = 0.24,
+      .beta = 0.01,
       .gs_period = 5,
       .warmup = 10,
       .total_bits = 2 * k,
       .lambda = 0.5,
   };
   c.ring_w = c.warmup;
+  c.lr = c.step / c.m;
   return c;
 }
