@@ -128,7 +128,8 @@ int main(int argc, char* argv[]) {
   int* bits = NULL;
   int* alphabet_arr = NULL;
   double* ev_live = NULL;
-
+  double* angles_scratch = NULL;
+  double* angles = NULL;
   FILE* out = NULL;
   int out_owned = 0;
 
@@ -159,12 +160,15 @@ int main(int argc, char* argv[]) {
   warmup_proj = calloc((size_t)cfg.warmup * cfg.k, sizeof(double));
   ev = calloc((size_t)cfg.k, sizeof(double));
   bits = calloc((size_t)cfg.k, sizeof(int));
+  angles_scratch = calloc((size_t)cfg.k * (size_t)cfg.k, sizeof(double));
+  angles = calloc((size_t)cfg.k, sizeof(double));
   alphabet_arr = calloc((size_t)cfg.k, sizeof(int));
   ev_live = calloc((size_t)cfg.k, sizeof(double));
   if (use_demo) demo_flat = calloc(DEMO_LEN, sizeof(double));
 
   if (!win || !xc || !y || !word || !bkpt || !warmup_proj || !ev || !bits ||
-      !ev_live || !alphabet_arr || (use_demo && !demo_flat)) {
+      !ev_live || !alphabet_arr || !angles_scratch || !angles ||
+      (use_demo && !demo_flat)) {
     fprintf(stderr, "Error: Memory allocation failed\n");
     goto cleanup;
   }
@@ -257,6 +261,21 @@ int main(int argc, char* argv[]) {
       if (l_err > worst_len_seen) worst_len_seen = l_err;
 
       gram_schmidt(&oja_live);
+      if (have_bkpt) {
+        double theta_max = 0.0;
+        int ang_rc = subspace_angles(&oja_frozen, &oja_live, angles_scratch,
+                                     angles, &theta_max);
+        if (ang_rc != 0) {
+          fprintf(stderr,
+                  "Warning: subspace_angles returned '%d' at window '%ld', "
+                  "measurement skipped\n",
+                  ang_rc, n_seen - 1);
+        } else {
+          fprintf(stderr, "angle,%ld,%.9f", n_seen - 1, theta_max);
+          for (int j = 0; j < cfg.k; j++) fprintf(stderr, ",%.9f", angles[j]);
+          fprintf(stderr, "\n");
+        }
+      }
     }
 
     // Project centered window onto the learned PCA subspace
@@ -410,6 +429,8 @@ cleanup:
   free(ev_live);
   free(bits);
   free(alphabet_arr);
+  free(angles_scratch);
+  free(angles);
   oja_free(&oja_live);
   oja_free(&oja_frozen);
   rmean_free(&my_stats);
