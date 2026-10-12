@@ -59,27 +59,30 @@ static double now_seconds(void) {
 
 // Open a destination file, or hand back stdout for "-"; the flag tells the
 // caller whether it owns the handle and must close it
-static FILE* open_sink(const char* path, int* owned) {
+static FILE *open_sink(const char *path, int *owned) {
   *owned = 0;
-  if (strcmp(path, "-") == 0) return stdout;
-  FILE* f = fopen(path, "w");
-  if (f) *owned = 1;
+  if (strcmp(path, "-") == 0)
+    return stdout;
+  FILE *f = fopen(path, "w");
+  if (f)
+    *owned = 1;
   return f;
 }
 
 // Persist the frozen dictionary as data; an analysis script needs exactly this
 // to recompute distances without re-running the C
-static int write_dictionary(const char* path, const Config* cfg,
-                            const double* ev, const int* bits,
-                            const int* alphabet, const double* bkpt) {
-  FILE* f = fopen(path, "w");
+static int write_dictionary(const char *path, const Config *cfg,
+                            const double *ev, const int *bits,
+                            const int *alphabet, const double *bkpt) {
+  FILE *f = fopen(path, "w");
   if (!f) {
     fprintf(stderr, "Error: Cannot write dictionary to '%s'\n", path);
     return -1;
   }
 
   fprintf(f, "pos,alphabet,bits,ev");
-  for (int b = 0; b < MAX_ALPHABET; b++) fprintf(f, ",bkpt%d", b);
+  for (int b = 0; b < MAX_ALPHABET; b++)
+    fprintf(f, ",bkpt%d", b);
   fprintf(f, "\n");
 
   for (int j = 0; j < cfg->k; j++) {
@@ -87,9 +90,9 @@ static int write_dictionary(const char* path, const Config* cfg,
     for (int b = 0; b < MAX_ALPHABET; b++) {
       double v = bkpt[j * MAX_ALPHABET + b];
       if (b >= alphabet[j])
-        fprintf(f, ",");  // slot unused at this position
+        fprintf(f, ","); // slot unused at this position
       else if (v == DBL_MAX)
-        fprintf(f, ",inf");  // the wall the symbol search always stops at
+        fprintf(f, ",inf"); // the wall the symbol search always stops at
       else
         fprintf(f, ",%.17g", v);
     }
@@ -100,7 +103,7 @@ static int write_dictionary(const char* path, const Config* cfg,
   return 0;
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   Config cfg;
   RunOptions run;
 
@@ -110,27 +113,28 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
   if (argc == 2) {
-    if (config_load(argv[1], &cfg, &run) != 0) return EXIT_FAILURE;
+    if (config_load(argv[1], &cfg, &run) != 0)
+      return EXIT_FAILURE;
   } else {
     config_defaults(&cfg, &run);
   }
 
   // Default exit code and safe initialization of pointers and state
   int rc = EXIT_FAILURE;
-  double* demo_flat = NULL;
-  double* win = NULL;
-  double* xc = NULL;
-  double* y = NULL;
-  int* word = NULL;
-  double* bkpt = NULL;
-  double* warmup_proj = NULL;
-  double* ev = NULL;
-  int* bits = NULL;
-  int* alphabet_arr = NULL;
-  double* ev_live = NULL;
-  double* angles_scratch = NULL;
-  double* angles = NULL;
-  FILE* out = NULL;
+  double *demo_flat = NULL;
+  double *win = NULL;
+  double *xc = NULL;
+  double *y = NULL;
+  int *word = NULL;
+  double *bkpt = NULL;
+  double *warmup_proj = NULL;
+  double *ev = NULL;
+  int *bits = NULL;
+  int *alphabet_arr = NULL;
+  double *ev_live = NULL;
+  double *angles_scratch = NULL;
+  double *angles = NULL;
+  FILE *out = NULL;
   int out_owned = 0;
 
   RunningMean my_stats = {0};
@@ -138,7 +142,7 @@ int main(int argc, char* argv[]) {
   OjaPCA oja_avg = {0};
   OjaPCA oja_frozen = {0};
 
-  const OjaPCA* symbol_basis = &oja_avg;
+  const OjaPCA *symbol_basis = &oja_avg;
   WindowStream stream = {0};
   ProjRing ring = {0};
 
@@ -148,6 +152,8 @@ int main(int argc, char* argv[]) {
   long n_words = 0;
   double worst_dot_seen = 0.0;
   double worst_len_seen = 0.0;
+  double worst_dot_avg = 0.0;
+  double worst_len_avg = 0.0;
   double t_io = 0.0;
   double t_algo = 0.0;
 
@@ -166,7 +172,8 @@ int main(int argc, char* argv[]) {
   angles = calloc((size_t)cfg.k, sizeof(double));
   alphabet_arr = calloc((size_t)cfg.k, sizeof(int));
   ev_live = calloc((size_t)cfg.k, sizeof(double));
-  if (use_demo) demo_flat = calloc(DEMO_LEN, sizeof(double));
+  if (use_demo)
+    demo_flat = calloc(DEMO_LEN, sizeof(double));
 
   if (!win || !xc || !y || !word || !bkpt || !warmup_proj || !ev || !bits ||
       !ev_live || !alphabet_arr || !angles_scratch || !angles ||
@@ -182,9 +189,8 @@ int main(int argc, char* argv[]) {
   }
 
   if (oja_init(&oja_live, cfg.k, cfg.m) != 0) {
-    fprintf(stderr,
-            "Error: oja_init failed, components must not exceed "
-            "channels * window\n");
+    fprintf(stderr, "Error: oja_init failed, components must not exceed "
+                    "channels * window\n");
     goto cleanup;
   }
 
@@ -230,7 +236,8 @@ int main(int argc, char* argv[]) {
   }
 
   fprintf(out, "window");
-  for (int j = 0; j < cfg.k; j++) fprintf(out, ",sym%d", j);
+  for (int j = 0; j < cfg.k; j++)
+    fprintf(out, ",sym%d", j);
   fprintf(out, "\n");
 
   // Main stream processing loop; reading and computing are timed separately so
@@ -239,7 +246,8 @@ int main(int argc, char* argv[]) {
     double t0 = now_seconds();
     int got = stream_next(&stream, win);
     t_io += now_seconds() - t0;
-    if (!got) break;
+    if (!got)
+      break;
 
     t0 = now_seconds();
     n_seen++;
@@ -258,17 +266,43 @@ int main(int argc, char* argv[]) {
     // Online PCA update via Oja's rule
     oja_update(&oja_live, xc, cfg.lr);
 
+    // And the smoothed copy follows it. Oja never settles, so freezing one
+    // point of its wandering freezes the whole wander with it; the average
+    // cancels what the wandering adds.
+    if (oja_blend(&oja_avg, &oja_live, cfg.beta) != 0) {
+      fprintf(stderr, "Error: oja_blend rejected its arguments\n");
+      t_algo += now_seconds() - t0;
+      goto cleanup;
+    }
+
     // Periodically monitor subspace drift and restore orthonormality
     if (n_seen % cfg.gs_period == 0) {
       double d_err, l_err;
       oja_orthonormality_error(&oja_live, &d_err, &l_err);
-      if (d_err > worst_dot_seen) worst_dot_seen = d_err;
-      if (l_err > worst_len_seen) worst_len_seen = l_err;
+      if (d_err > worst_dot_seen)
+        worst_dot_seen = d_err;
+      if (l_err > worst_len_seen)
+        worst_len_seen = l_err;
+
+      /* The guarantee is stated about the basis that WRITES, and that is now
+         the smoothed one, so its drift is the number with meaning. The raw
+         one is kept because it is the early warning that the step is too big.
+       */
+      double da_err, la_err;
+      oja_orthonormality_error(&oja_avg, &da_err, &la_err);
+      if (da_err > worst_dot_avg)
+        worst_dot_avg = da_err;
+      if (la_err > worst_len_avg)
+        worst_len_avg = la_err;
 
       gram_schmidt(&oja_live);
+      /* The average of unit vectors is not a unit vector and the average of
+         perpendicular ones is not perpendicular, so the smoothed copy needs
+         straightening too, at the same moment. */
+      gram_schmidt(&oja_avg);
       if (have_bkpt) {
         double theta_max = 0.0;
-        int ang_rc = subspace_angles(&oja_frozen, &oja_live, angles_scratch,
+        int ang_rc = subspace_angles(&oja_frozen, &oja_avg, angles_scratch,
                                      angles, &theta_max);
         if (ang_rc != 0) {
           fprintf(stderr,
@@ -277,7 +311,8 @@ int main(int argc, char* argv[]) {
                   ang_rc, n_seen - 1);
         } else {
           fprintf(stderr, "angle,%ld,%.9f", n_seen - 1, theta_max);
-          for (int j = 0; j < cfg.k; j++) fprintf(stderr, ",%.9f", angles[j]);
+          for (int j = 0; j < cfg.k; j++)
+            fprintf(stderr, ",%.9f", angles[j]);
           fprintf(stderr, "\n");
         }
       }
@@ -316,7 +351,8 @@ int main(int argc, char* argv[]) {
             bits[j] = MAX_BITS;
           }
           alphabet_arr[j] = 1 << bits[j];
-          if (alphabet_arr[j] > max_a) max_a = alphabet_arr[j];
+          if (alphabet_arr[j] > max_a)
+            max_a = alphabet_arr[j];
         }
 
         // Equi-depth cut points are noise when a bin holds only a sample or two
@@ -331,11 +367,14 @@ int main(int argc, char* argv[]) {
 
         // Print warmup configuration diagnostics
         fprintf(stderr, "ev       =");
-        for (int j = 0; j < cfg.k; j++) fprintf(stderr, " %.4f", ev[j]);
+        for (int j = 0; j < cfg.k; j++)
+          fprintf(stderr, " %.4f", ev[j]);
         fprintf(stderr, "\nbits     =");
-        for (int j = 0; j < cfg.k; j++) fprintf(stderr, " %d", bits[j]);
+        for (int j = 0; j < cfg.k; j++)
+          fprintf(stderr, " %d", bits[j]);
         fprintf(stderr, "\nalphabet =");
-        for (int j = 0; j < cfg.k; j++) fprintf(stderr, " %d", alphabet_arr[j]);
+        for (int j = 0; j < cfg.k; j++)
+          fprintf(stderr, " %d", alphabet_arr[j]);
         fprintf(stderr, "\nscore    = %.6f\n", score);
 
         // Persist the frozen dictionary for downstream analysis
@@ -346,8 +385,9 @@ int main(int argc, char* argv[]) {
         }
 
         gram_schmidt(&oja_live);
+        gram_schmidt(&oja_avg);
 
-        int frozen_rc = oja_copy_from(&oja_frozen, &oja_live);
+        int frozen_rc = oja_copy_from(&oja_frozen, &oja_avg);
         if (frozen_rc != 0) {
           fprintf(stderr,
                   "Error: Could not freeze the basis, oja_copy_from returned "
@@ -370,7 +410,8 @@ int main(int argc, char* argv[]) {
     digitize(y, bkpt, cfg.k, alphabet_arr, word);
     n_words++;
 
-    if (n_seen % cfg.ring_w == 0) pring_refresh(&ring);
+    if (n_seen % cfg.ring_w == 0)
+      pring_refresh(&ring);
 
     if (ring.count == ring.cap) {
       pring_importances(&ring, ev_live);
@@ -414,7 +455,12 @@ int main(int argc, char* argv[]) {
   // Run summary: volume, guarantee slack, and where the time actually went
   fprintf(stderr, "windows  = %ld seen, %ld symbolised\n", n_seen, n_words);
   fprintf(stderr,
-          "drift    = overlap %.3e, length %.3e (worst before cleanup)\n",
+          "drift    = overlap %.3e, length %.3e (averaged basis, the one the "
+          "bound is about)\n",
+          worst_dot_avg, worst_len_avg);
+  fprintf(stderr,
+          "drift raw= overlap %.3e, length %.3e (raw Oja, watch it for a step "
+          "that is too big)\n",
           worst_dot_seen, worst_len_seen);
   fprintf(stderr, "time     = %.3f s reading, %.3f s algorithm\n", t_io,
           t_algo);
@@ -422,7 +468,8 @@ int main(int argc, char* argv[]) {
   rc = EXIT_SUCCESS;
 
 cleanup:
-  if (out && out_owned) fclose(out);
+  if (out && out_owned)
+    fclose(out);
   free(demo_flat);
   free(win);
   free(xc);
@@ -438,6 +485,7 @@ cleanup:
   free(angles);
   oja_free(&oja_live);
   oja_free(&oja_frozen);
+  oja_free(&oja_avg);
   rmean_free(&my_stats);
   stream_free(&stream);
   pring_free(&ring);
