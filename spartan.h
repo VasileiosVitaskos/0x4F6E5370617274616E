@@ -33,8 +33,12 @@ typedef struct {
   double beta;   /* how fast the averaged basis forgets; 0 turns it off */
   double lr;     /* how fast the PCA directions move toward the data */
   int gs_period; /* re-straighten the directions every this many windows */
-  int warmup;    /* windows collected before the cut points are fixed */
-  int total_bits; /* bit budget for one whole word */
+  int angle_period; /* windows between angle readings; MUST be a multiple of
+                       gs_period, because the inner products are only cosines
+                       of principal angles on a basis that was just
+                       straightened */
+  int warmup;       /* windows collected before the cut points are fixed */
+  int total_bits;   /* bit budget for one whole word */
   double lambda;
   int d;
   int m_time;
@@ -186,8 +190,25 @@ int daa_allocate(const double *ev, int k, int total_bits, double lamda,
    Compare it against the best split to see if changing is worth it. */
 double daa_score(const double *ev, int k, int total_bits, double lamda,
                  const int *ref_bits, const int *bits);
-
+/* The best bid anybody could make for one more bit, minus the lowest price
+ * anybody would accept to give one up. Positive means a transfer is worth
+ * making and the dictionary in force is no longer the best one.
+ *
+ * By concavity this one number settles the whole question: if no single bit is
+ * worth moving from the cheapest seller to the dearest buyer, no combination of
+ * two or more transfers is worth making either. Two passes over k numbers
+ * replace solving the allocation again.
+ *
+ * ref_bits: MUST be the same reference the dictionary in force was built with.
+ *   NULL          -> the even split, which is what daa_allocate falls back to.
+ *   previous bits -> what a re-tuning uses, so the split resists moving.
+ * Get this wrong and the trigger measures the gap of one objective while the
+ * allocator optimises another: the gap says a transfer pays, the allocator
+ * refuses it, and the pair loops.
+ *
+ * Returns the gap, or 0.0 when it is not positive and when nobody can buy or
+ * nobody can sell.
+ */
 double daa_gap(const double *ev, int k, int total_bits, double lamda,
-               const int *bits);
-
+               const int *ref_bits, const int *bits);
 #endif /* SPARTAN_H */

@@ -118,6 +118,10 @@ int main(int argc, char *argv[]) {
   } else {
     config_defaults(&cfg, &run);
   }
+  // Every run describes itself. Written to stderr, which is already the
+  // diagnostics channel, and in a shape that can be fed straight back in as a
+  // settings file
+  config_dump(stderr, &cfg, &run);
 
   // Default exit code and safe initialization of pointers and state
   int rc = EXIT_FAILURE;
@@ -300,7 +304,7 @@ int main(int argc, char *argv[]) {
          perpendicular ones is not perpendicular, so the smoothed copy needs
          straightening too, at the same moment. */
       gram_schmidt(&oja_avg);
-      if (have_bkpt) {
+      if (have_bkpt && n_seen % cfg.angle_period == 0) {
         double theta_max = 0.0;
         int ang_rc = subspace_angles(&oja_frozen, &oja_avg, angles_scratch,
                                      angles, &theta_max);
@@ -415,7 +419,8 @@ int main(int argc, char *argv[]) {
 
     if (ring.count == ring.cap) {
       pring_importances(&ring, ev_live);
-      double gap = daa_gap(ev_live, cfg.k, cfg.total_bits, cfg.lambda, bits);
+      double gap =
+          daa_gap(ev_live, cfg.k, cfg.total_bits, cfg.lambda, NULL, bits);
       fprintf(stderr, "gap,%ld,%.6f\n", n_seen - 1, gap);
     }
 
