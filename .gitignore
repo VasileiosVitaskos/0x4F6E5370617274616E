@@ -1,7 +1,17 @@
 # binaries
+spartan
+spartan_dbg
 spartan_toy
 spartan_toy_dbg
-my_program
+test_daa
+test_ring
+test_svd
 *.o
-*.out
-a.out
+#python
+.venv/
+__pycache__/
+*.pyc
+#testing products
+debug_tests/out/
+synthetic_tests/out/
+dataset_tests/out/
