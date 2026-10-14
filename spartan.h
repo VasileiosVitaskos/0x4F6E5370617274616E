@@ -14,7 +14,7 @@
  */
 
 #define SPARTAN_EPS 1e-12
-
+#define SPARTAN_DEG_TO_RAD 0.017453292519943295
 /* Biggest alphabet one letter position may have. Also the row stride of the
    cut-point table, so every position has the same amount of room. */
 #define MAX_ALPHABET 16
@@ -26,13 +26,20 @@
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-  int k;         /* directions kept / letters per word */
-  int m;         /* numbers per window */
-  int stride;    /* how far the window moves each step; == m means no overlap */
-  double step;   /* step size for the PCA directions, BEFORE dividing by m */
-  double beta;   /* how fast the averaged basis forgets; 0 turns it off */
-  double lr;     /* how fast the PCA directions move toward the data */
-  int gs_period; /* re-straighten the directions every this many windows */
+  int k;       /* directions kept / letters per word */
+  int m;       /* numbers per window */
+  int stride;  /* how far the window moves each step; == m means no overlap */
+  double step; /* step size for the PCA directions, BEFORE dividing by m */
+  double beta; /* how fast the averaged basis forgets; 0 turns it off */
+  double lr;   /* how fast the PCA directions move toward the data */
+  double theta_threshold_deg; /* epoch closes past this angle, as the user
+                             wrote it, in DEGREES. Kept so the dump can
+                             print back exactly what came in */
+  double theta_threshold;     /* the same angle in radians, worked out once.
+                                 This is what the loop compares against, and
+                                 the only form that may be compared with
+                                 anything acos returned */
+  int gs_period;    /* re-straighten the directions every this many windows */
   int angle_period; /* windows between angle readings; MUST be a multiple of
                        gs_period, because the inner products are only cosines
                        of principal angles on a basis that was just
@@ -51,20 +58,20 @@ Config config_default_mv(int k, int d, int m_time);
 
 /* ---------------- basic maths ---------------- */
 
-double dot_product(const double *v1, const double *v2, size_t n);
-void znorm_row(double *x, int m);
+double dot_product(const double* v1, const double* v2, size_t n);
+void znorm_row(double* x, int m);
 
 /* ---------------- running average of the stream ---------------- */
 
 typedef struct {
-  double *mean;
+  double* mean;
   long n;
   int m;
 } RunningMean;
 
-int rmean_init(RunningMean *rm, int m);
-void rmean_free(RunningMean *rm);
-void rmean_update(RunningMean *rm, const double *x);
+int rmean_init(RunningMean* rm, int m);
+void rmean_free(RunningMean* rm);
+void rmean_update(RunningMean* rm, const double* x);
 
 /* ---------------- the last W projections ---------------- */
 
@@ -80,42 +87,42 @@ void rmean_update(RunningMean *rm, const double *x);
  * cost k operations instead of W*k.
  */
 typedef struct {
-  double *buf; /* cap rows of k numbers, flat, in ring order */
-  double *s1;  /* k sums */
-  double *s2;  /* k sums of squares */
+  double* buf; /* cap rows of k numbers, flat, in ring order */
+  double* s1;  /* k sums */
+  double* s2;  /* k sums of squares */
   int cursor;  /* where the next projection is written, in [0, cap) */
   int count;   /* how many are in, saturating at cap */
   int cap;     /* W */
   int k;
 } ProjRing;
 
-int pring_init(ProjRing *r, int cap, int k);
-void pring_free(ProjRing *r);
-void pring_push(ProjRing *r, const double *y);
-void pring_importances(const ProjRing *r, double *ev);
-void pring_refresh(ProjRing *r);
-void pring_reset(ProjRing *r);
+int pring_init(ProjRing* r, int cap, int k);
+void pring_free(ProjRing* r);
+void pring_push(ProjRing* r, const double* y);
+void pring_importances(const ProjRing* r, double* ev);
+void pring_refresh(ProjRing* r);
+void pring_reset(ProjRing* r);
 
 /* ---------------- the PCA directions ---------------- */
 
 typedef struct {
-  double *v; /* k rows of m numbers, flat; row j starts at v[j*m] */
-  double *u; /* scratch room, m numbers */
+  double* v; /* k rows of m numbers, flat; row j starts at v[j*m] */
+  double* u; /* scratch room, m numbers */
   int k, m;
 } OjaPCA;
 
-int oja_init(OjaPCA *p, int k, int m);
-void oja_free(OjaPCA *p);
-void oja_update(OjaPCA *p, const double *xc, double lr);
-int oja_blend(OjaPCA *dst, const OjaPCA *src, double beta);
-void gram_schmidt(OjaPCA *p);
+int oja_init(OjaPCA* p, int k, int m);
+void oja_free(OjaPCA* p);
+void oja_update(OjaPCA* p, const double* xc, double lr);
+int oja_blend(OjaPCA* dst, const OjaPCA* src, double beta);
+void gram_schmidt(OjaPCA* p);
 
 /* Returns 0 on success, -1 if either pointer is NULL or either side holds no
  * direction array, and -2 if both are initialised but the shapes differ.
  * The two are kept apart on purpose: -1 is "you handed me nothing", -2 is
  * "you handed me the wrong thing", and only the second tells you to go look
  * at k and m. */
-int oja_copy_from(OjaPCA *dst, const OjaPCA *src);
+int oja_copy_from(OjaPCA* dst, const OjaPCA* src);
 
 /* How far the directions have drifted from being clean and separate.
  *   max_dot = biggest overlap between any two directions; 0 is perfect
@@ -125,10 +132,10 @@ int oja_copy_from(OjaPCA *dst, const OjaPCA *src);
  * BEFORE straightening, which is when the drift is at its worst.
  * Either pointer may be NULL.
  */
-void oja_orthonormality_error(const OjaPCA *p, double *max_dot,
-                              double *max_len);
+void oja_orthonormality_error(const OjaPCA* p, double* max_dot,
+                              double* max_len);
 
-int svd_values(double *a, int n, double *sv);
+int svd_values(double* a, int n, double* sv);
 
 /* The principal angles between the subspace the frozen basis spans and the one
  * the live basis spans. The k numbers are the angles themselves, in radians.
@@ -157,17 +164,17 @@ int svd_values(double *a, int n, double *sv);
  * Returns 0 on success, -1 on NULL arguments or mismatched shapes, and -2 if
  * the singular values did not converge. On anything but 0 nothing is written.
  */
-int subspace_angles(const OjaPCA *frozen, const OjaPCA *live, double *scratch,
-                    double *angles, double *max_angle);
+int subspace_angles(const OjaPCA* frozen, const OjaPCA* live, double* scratch,
+                    double* angles, double* max_angle);
 
 /* ---------------- from numbers to letters ---------------- */
 
-void project(const OjaPCA *p, const double *xc, double *y);
-void estimate_eigenvalues(const double *proj, int n, int k, double *ev);
-void compute_breakpoints(const double *proj, int n, int k, const int *alphabet,
-                         double *bkpt);
-void digitize(const double *y, const double *bkpt, int k, const int *alphabet,
-              int *word);
+void project(const OjaPCA* p, const double* xc, double* y);
+void estimate_eigenvalues(const double* proj, int n, int k, double* ev);
+void compute_breakpoints(const double* proj, int n, int k, const int* alphabet,
+                         double* bkpt);
+void digitize(const double* y, const double* bkpt, int k, const int* alphabet,
+              int* word);
 
 /* ---------------- splitting the bit budget ---------------- */
 
@@ -183,13 +190,13 @@ void digitize(const double *y, const double *bkpt, int k, const int *alphabet,
  *
  * Returns 0 on success, -1 if the inputs make no sense or memory runs out.
  */
-int daa_allocate(const double *ev, int k, int total_bits, double lamda,
-                 const int *ref_bits, int *bits, double *score);
+int daa_allocate(const double* ev, int k, int total_bits, double lamda,
+                 const int* ref_bits, int* bits, double* score);
 
 /* How good is a split we already have, judged with these importances?
    Compare it against the best split to see if changing is worth it. */
-double daa_score(const double *ev, int k, int total_bits, double lamda,
-                 const int *ref_bits, const int *bits);
+double daa_score(const double* ev, int k, int total_bits, double lamda,
+                 const int* ref_bits, const int* bits);
 /* The best bid anybody could make for one more bit, minus the lowest price
  * anybody would accept to give one up. Positive means a transfer is worth
  * making and the dictionary in force is no longer the best one.
@@ -209,6 +216,6 @@ double daa_score(const double *ev, int k, int total_bits, double lamda,
  * Returns the gap, or 0.0 when it is not positive and when nobody can buy or
  * nobody can sell.
  */
-double daa_gap(const double *ev, int k, int total_bits, double lamda,
-               const int *ref_bits, const int *bits);
+double daa_gap(const double* ev, int k, int total_bits, double lamda,
+               const int* ref_bits, const int* bits);
 #endif /* SPARTAN_H */
