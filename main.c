@@ -104,6 +104,73 @@ static int write_dictionary(const char* path, const Config* cfg,
   return 0;
 }
 
+/*
+ * Builds a dictionary from a block of projections: importances, bit split,
+ * alphabet sizes and cut points.
+ *
+ * Called twice: once when the warm-up ends, and once at every re-basing. The
+ * two paths must produce a dictionary the same way or they will drift apart,
+ * which is the whole reason this is a function and not two copies.
+ *
+ * cfg       settings in force
+ * proj      n_proj rows of k numbers, flat; row r position j at proj[r*k + j]
+ * n_proj    how many rows are valid                          [windows]
+ * why       short label for the log line, e.g. "warmup" or "rebasis"
+ * ev        out, k importances as shares, they sum to 1
+ * bits      out, k bit counts, they sum to cfg->total_bits
+ * alphabet  out, k alphabet sizes, each 1 << bits[j]
+ * bkpt      out, k rows of MAX_ALPHABET cut points, flat
+ * score     out, the objective the chosen split reaches, or NULL
+ *
+ * Returns 0 on success, -1 if the split could not be solved.
+ *
+ * Edge cases:
+ *   n_proj < 10 * largest alphabet  -> cut points are noise, warned not refused
+ *   a position may receive zero bits -> alphabet 1, one cut point, letter
+ *                                       always 0, which is intended
+ *   ROW ORDER DOES NOT MATTER. Both consumers compute per column statistics,
+ *   a variance and a sorted quantile, so a ring buffer may be passed straight
+ *   in even though its rows are not in time order.
+ */
+static int build_dictionary(const Config* cfg, const double* proj, int n_proj,
+                            const char* why, double* ev, int* bits,
+                            int* alphabet, double* bkpt, double* score) {
+  estimate_eigenvalues(proj, n_proj, cfg->k, ev);
+  double local_score = 0.0;
+  if (daa_allocate(ev, cfg->k, cfg->total_bits, cfg->lambda, NULL, bits,
+                   &local_score) != 0) {
+    return -1;
+  }
+  if (score) *score = local_score;
+  int max_a = 0;
+  for (int j = 0; j < cfg->k; j++) {
+    if (bits[j] > MAX_BITS) {
+      fprintf(stderr, "Warning: Position %d wanted %d bits, clamped to %d\n", j,
+              bits[j], MAX_BITS);
+      bits[j] = MAX_BITS;
+    }
+    alphabet[j] = 1 << bits[j];
+    if (alphabet[j] > max_a) {
+      max_a = alphabet[j];
+    }
+  }
+  if (n_proj < 10 * max_a) {
+    fprintf(stderr,
+            "Warning: %s %d is small for largest alphabet %d, cut points will "
+            "be noisy, want at least %d\n",
+            why, n_proj, max_a, 10 * max_a);
+  }
+  compute_breakpoints(proj, n_proj, cfg->k, alphabet, bkpt);
+  fprintf(stderr, "ev       =");
+  for (int j = 0; j < cfg->k; j++) fprintf(stderr, " %.4f", ev[j]);
+  fprintf(stderr, "\nbits     =");
+  for (int j = 0; j < cfg->k; j++) fprintf(stderr, " %d", bits[j]);
+  fprintf(stderr, "\nalphabet =");
+  for (int j = 0; j < cfg->k; j++) fprintf(stderr, " %d", alphabet[j]);
+  fprintf(stderr, "\nscore    = %.6f\n", local_score);
+  return 0;
+}
+
 int main(int argc, char* argv[]) {
   Config cfg;
   RunOptions run;
@@ -159,14 +226,16 @@ int main(int argc, char* argv[]) {
   double worst_dot_avg = 0.0;
   double worst_len_avg = 0.0;
   double worst_noise = 0.0;
-  /* Previous reading and the window it was taken at. The sentinel must be a
- value real data cannot produce: -1 works because n_seen is always
- positive, 0 does NOT because window 0 exists */
   double theta_prev = 0.0;
   long theta_prev_at = -1;
   double theta_rate = 0.0; /* radians per window, smoothed */
   int have_rate = 0;
   double worst_rate = 0.0;
+  int staging = 0;
+  long quiet_until = 0;
+  double worst_over = 0.0;
+  int was_below = 1;
+  int warned_infeasible = 0;
   double t_io = 0.0;
   double t_algo = 0.0;
 
@@ -317,9 +386,6 @@ int main(int argc, char* argv[]) {
                   "measurement skipped\n",
                   ang_rc, n_seen - 1);
         } else {
-          /* The tremble with the signal taken out. oja_avg and oja_live see
-   exactly the same windows and differ only by the smoothing, so the
-   angle between THEM is ours and not the data's */
           double theta_noise = 0.0;
           int noise_rc = subspace_angles(&oja_avg, &oja_live, angles_scratch,
                                          NULL, &theta_noise);
@@ -349,6 +415,60 @@ int main(int argc, char* argv[]) {
           theta_prev = theta_max;
           theta_prev_at = n_seen;
 
+          /* How much angle is left before the policy, and how much the basis
+   will travel while a fresh ring fills. Both in radians */
+          double remaining = cfg.theta_threshold - theta_max;
+          double travel = theta_rate * (double)cfg.ring_w;
+          if (travel < 0.0) {
+            /* A basis coming back toward the frozen one needs no head start.
+               Clamping here rather than testing the sign later keeps the
+               condition below a single expression */
+            travel = 0.0;
+          }
+
+          if (!warned_infeasible && travel >= cfg.theta_threshold) {
+            /* A verdict on the configuration, not on the data: at this rate
+               the basis crosses the entire policy in fewer windows than the
+               preparation needs, so no warning level can arrive in time.
+               Printed once, because it would otherwise repeat every reading */
+            fprintf(stderr,
+                    "Warning: at %.4f deg per window the basis crosses the "
+                    "whole %.2f deg policy in fewer than ring_window %d "
+                    "windows, so no warning level can prepare in time. Lower "
+                    "step, raise theta_threshold_deg, or lower ring_window\n",
+                    theta_rate / SPARTAN_DEG_TO_RAD,
+                    cfg.theta_threshold / SPARTAN_DEG_TO_RAD, cfg.ring_w);
+            warned_infeasible = 1;
+          }
+
+          /* The latch. Once staging begins there is a snapshot and a filling
+             ring behind it, so a rate that drops must not undo it: restarting
+             would throw the collection away and could repeat forever on a
+             wobbly rate, never finishing one ring.
+             The margin is the travel we need plus the noise reference, which
+             covers where we are now. It does NOT cover the error in the rate
+             itself; that shows up as occasional lateness and is measured as
+             the overshoot */
+          if (!staging && remaining <= travel + theta_noise) {
+            staging = 1;
+            fprintf(stderr, "warn,%ld,%.9f,%.9f,%.9f\n", n_seen - 1, theta_max,
+                    travel, theta_noise);
+          }
+          if (theta_max > cfg.theta_threshold) {
+            if (was_below) {
+              double over = theta_max - cfg.theta_threshold;
+              if (over > worst_over) worst_over = over;
+            }
+            was_below = 0;
+
+            if (n_seen >= quiet_until) {
+              fprintf(stderr, "cut,%ld,%.9f,%.9f,%.9f\n", n_seen - 1, theta_max,
+                      theta_max - cfg.theta_threshold, theta_noise);
+              quiet_until = n_seen + cfg.warmup;
+            }
+          } else {
+            was_below = 1;
+          }
           fprintf(stderr, "angle,%ld,%.9f", n_seen - 1, theta_max);
           for (int j = 0; j < cfg.k; j++) fprintf(stderr, ",%.9f", angles[j]);
           fprintf(stderr, ",%.9f,%.9f\n", theta_noise, theta_rate);
@@ -369,49 +489,12 @@ int main(int argc, char* argv[]) {
       warm_count++;
 
       if (warm_count == cfg.warmup) {
-        estimate_eigenvalues(warmup_proj, cfg.warmup, cfg.k, ev);
-
-        double score = 0.0;
-        if (daa_allocate(ev, cfg.k, cfg.total_bits, cfg.lambda, NULL, bits,
-                         &score) != 0) {
-          fprintf(stderr, "Error: daa_allocate failed\n");
+        if (build_dictionary(&cfg, warmup_proj, cfg.warmup, "warmup", ev, bits,
+                             alphabet_arr, bkpt, NULL) != 0) {
+          fprintf(stderr, "Error: Couldnot build dictionary\n");
           t_algo += now_seconds() - t0;
           goto cleanup;
         }
-
-        // Compute alphabet sizes from allocated bit budget
-        int max_a = 0;
-        for (int j = 0; j < cfg.k; j++) {
-          if (bits[j] > MAX_BITS) {
-            fprintf(stderr,
-                    "Warning: Position %d wanted %d bits, clamped to %d\n", j,
-                    bits[j], MAX_BITS);
-            bits[j] = MAX_BITS;
-          }
-          alphabet_arr[j] = 1 << bits[j];
-          if (alphabet_arr[j] > max_a) max_a = alphabet_arr[j];
-        }
-
-        // Equi-depth cut points are noise when a bin holds only a sample or
-        // two
-        if (cfg.warmup < 10 * max_a) {
-          fprintf(stderr,
-                  "Warning: Warmup %d is small for the largest alphabet %d, "
-                  "cut points will be noisy, want at least %d\n",
-                  cfg.warmup, max_a, 10 * max_a);
-        }
-
-        compute_breakpoints(warmup_proj, cfg.warmup, cfg.k, alphabet_arr, bkpt);
-
-        // Print warmup configuration diagnostics
-        fprintf(stderr, "ev       =");
-        for (int j = 0; j < cfg.k; j++) fprintf(stderr, " %.4f", ev[j]);
-        fprintf(stderr, "\nbits     =");
-        for (int j = 0; j < cfg.k; j++) fprintf(stderr, " %d", bits[j]);
-        fprintf(stderr, "\nalphabet =");
-        for (int j = 0; j < cfg.k; j++) fprintf(stderr, " %d", alphabet_arr[j]);
-        fprintf(stderr, "\nscore    = %.6f\n", score);
-
         // Persist the frozen dictionary for downstream analysis
         if (run.dict_out[0] && write_dictionary(run.dict_out, &cfg, ev, bits,
                                                 alphabet_arr, bkpt) != 0) {
@@ -504,6 +587,8 @@ int main(int argc, char* argv[]) {
           worst_noise / SPARTAN_DEG_TO_RAD);
   fprintf(stderr, "rate     = %.4f deg/window worst smoothed\n",
           worst_rate / SPARTAN_DEG_TO_RAD);
+  fprintf(stderr, "overshoot= %.4f deg worst past the policy when first seen\n",
+          worst_over / SPARTAN_DEG_TO_RAD);
   fprintf(stderr, "time     = %.3f s reading, %.3f s algorithm\n", t_io,
           t_algo);
 
