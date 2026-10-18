@@ -116,9 +116,15 @@ static int write_dictionary(const char *path, const Config *cfg,
  * which is the whole reason this is a function and not two copies.
  *
  * cfg       settings in force
- * proj      n_proj rows of k numbers, flat; row r position j at proj[r*k + j]
+ * proj      n_proj rows of k numbers, flat, row r position j at proj[r*k + j].
+ *           MODIFIED: its columns come back reordered to match perm. Both
+ *           callers drop this buffer right after, so nothing reads the old
+ *           order, but do not pass one you still need
  * n_proj    how many rows are valid                          [windows]
  * why       short label for the log line, e.g. "warmup" or "rebasis"
+ * perm      out, k entries; perm[i] is the OLD position now sitting at NEW
+ *           position i. The caller MUST apply the same perm to the rows of
+ *           the basis snapshot, or the dictionary and the basis disagree
  * ev        out, k importances as shares, they sum to 1
  * bits      out, k bit counts, they sum to cfg->total_bits
  * alphabet  out, k alphabet sizes, each 1 << bits[j]
@@ -130,18 +136,75 @@ static int write_dictionary(const char *path, const Config *cfg,
  * Returns 0 on success, -1 if the split could not be solved.
  *
  * Edge cases:
- *   n_proj < 10 * largest alphabet  -> cut points are noise, warned not refused
- *   a position may receive zero bits -> alphabet 1, one cut point, letter
+ *   n_proj < 10 * largest alphan_proj rows of k numbers, flat; row r position j
+ * at proj[r*k + j]. MODIFIED: its columns come back reordered to match perm.
+ * Both callers drop this buffer right after, so nothing reads the old order,
+ * but do not pass one you still needbet  -> cut points are noise, warned not
+ * refused a position may receive zero bits -> alphabet 1, one cut point, letter
  *                                       always 0, which is intended
- *   ROW ORDER DOES NOT MATTER. Both consumers compute per column statistics,
+ *   ROW ORDER DOES NOT MATTER.
+ *   The DP at spartan.c:611 forbids a position from taking more bits than
+ *   the one before it, which is a theorem only when ev is descending. Oja
+ *   does not deliver its directions in that order, so this sorts them.
+ *   Both consumers compute per column statistics,
  *   a variance and a sorted quantile, so a ring buffer may be passed straight
  *   in even though its rows are not in time order.
  */
-static int build_dictionary(const Config *cfg, const double *proj, int n_proj,
-                            const char *why, double *ev, int *bits,
+static int build_dictionary(const Config *cfg, double *proj, int n_proj,
+                            const char *why, int *perm, double *ev, int *bits,
                             int *alphabet, double *bkpt, double *score) {
-  // Step 1: how much spread each position carries, as shares summing to 1
+
   estimate_eigenvalues(proj, n_proj, cfg->k, ev);
+
+  for (int i = 0; i < cfg->k; i++) {
+    perm[i] = i;
+  }
+
+  for (int i = 0; i < cfg->k - 1; i++) {
+    int max_idx = i;
+    for (int j = i + 1; j < cfg->k; j++) {
+      if (ev[perm[j]] > ev[perm[max_idx]]) {
+        max_idx = j;
+      }
+    }
+    if (max_idx != i) {
+      int tmp = perm[i];
+      perm[i] = perm[max_idx];
+      perm[max_idx] = tmp;
+    }
+  }
+
+  int is_identity = 1;
+  for (int i = 0; i < cfg->k; i++) {
+    if (perm[i] != i) {
+      is_identity = 0;
+      break;
+    }
+  }
+
+  if (!is_identity) {
+    double tmp_ev[cfg->k];
+    for (int i = 0; i < cfg->k; i++) {
+      tmp_ev[i] = ev[perm[i]];
+    }
+    for (int i = 0; i < cfg->k; i++) {
+      ev[i] = tmp_ev[i];
+    }
+    // 2. Reorder proj columns (ανά γραμμή r)
+    double tmp_row[cfg->k];
+    for (int r = 0; r < n_proj; r++) {
+
+      // Gather: διαβάζουμε τις παλιές στήλες perm[i] στη νέα θέση i
+      for (int i = 0; i < cfg->k; i++) {
+        tmp_row[i] = proj[r * cfg->k + perm[i]];
+      }
+      // Γράφουμε πίσω στην ίδια γραμμή r
+      for (int i = 0; i < cfg->k; i++) {
+        proj[r * cfg->k + i] = tmp_row[i];
+      }
+    }
+  }
+
   // Step 2: split total_bits across the k positions. DP, so this is the best
   // split for this lambda, not a greedy approximation
   double local_score = 0.0;
@@ -165,8 +228,9 @@ static int build_dictionary(const Config *cfg, const double *proj, int n_proj,
       max_a = alphabet[j];
     }
   }
-  // Step 4: a cut point is a quantile. With alphabet A the thinnest cell holds
-  // about n_proj/A rows, and a quantile drawn from a handful of rows is noise
+  // Step 4: a cut point is a quantile. With alphabet A the thinnest cell
+  // holds about n_proj/A rows, and a quantile drawn from a handful of rows is
+  // noise
   if (n_proj < 10 * max_a) {
     fprintf(stderr,
             "Warning: %s %d is small for largest alphabet %d, cut points will "
@@ -225,6 +289,7 @@ int main(int argc, char *argv[]) {
   double *ev_live = NULL;
   double *angles_scratch = NULL;
   double *angles = NULL;
+  int *perm = NULL;
   FILE *out = NULL;
   int out_owned = 0;
 
@@ -282,6 +347,7 @@ int main(int argc, char *argv[]) {
   bits = calloc((size_t)cfg.k, sizeof(int));
   angles_scratch = calloc((size_t)cfg.k * (size_t)(cfg.k + 1), sizeof(double));
   angles = calloc((size_t)cfg.k, sizeof(double));
+  perm = calloc((size_t)cfg.k, sizeof(int));
   alphabet_arr = calloc((size_t)cfg.k, sizeof(int));
   ev_live = calloc((size_t)cfg.k, sizeof(double));
   if (use_demo)
@@ -289,7 +355,7 @@ int main(int argc, char *argv[]) {
 
   if (!win || !xc || !y || !y_cand || !word || !bkpt || !warmup_proj || !ev ||
       !bits || !ev_live || !alphabet_arr || !angles_scratch || !angles ||
-      (use_demo && !demo_flat)) {
+      !perm || (use_demo && !demo_flat)) {
     fprintf(stderr, "Error: Memory allocation failed\n");
     goto cleanup;
   }
@@ -361,8 +427,8 @@ int main(int argc, char *argv[]) {
     fprintf(out, ",sym%d", j);
   fprintf(out, "\n");
 
-  // Main stream processing loop; reading and computing are timed separately so
-  // a slow text parser can never be mistaken for a slow algorithm
+  // Main stream processing loop; reading and computing are timed separately
+  // so a slow text parser can never be mistaken for a slow algorithm
   for (;;) {
     double t0 = now_seconds();
     int got = stream_next(&stream, win);
@@ -476,7 +542,8 @@ int main(int argc, char *argv[]) {
             /* A verdict on the configuration, not on the data: at this rate
                the basis crosses the entire policy in fewer windows than the
                preparation needs, so no warning level can arrive in time.
-               Printed once, because it would otherwise repeat every reading */
+               Printed once, because it would otherwise repeat every reading
+             */
             fprintf(stderr,
                     "Warning: at %.4f deg per window the basis crosses the "
                     "whole %.2f deg policy in fewer than ring_window %d "
@@ -528,18 +595,18 @@ int main(int argc, char *argv[]) {
               /* TODO 1: Χτίσιμο νέου λεξικού από το cand_ring */
               double new_score = 0.0;
               if (build_dictionary(&cfg, cand_ring.buf, cand_ring.count,
-                                   "rebasis", ev, bits, alphabet_arr, bkpt,
-                                   &new_score) != 0) {
+                                   "rebasis", perm, ev, bits, alphabet_arr,
+                                   bkpt, &new_score) != 0) {
                 fprintf(stderr, "Error: could not build candidate dictionary "
                                 "at re-basing\n");
                 t_algo += now_seconds() - t0;
                 goto cleanup;
               }
-              /* How far the incoming basis already is from the data on the day
-               * it starts work. theta_max measures the gap we are fixing; this
-               * measures the gap the fix leaves behind. The candidate was
-               * frozen at the warn, and whatever the subspace did between the
-               * warn and now, it did without it.
+              /* How far the incoming basis already is from the data on the
+               * day it starts work. theta_max measures the gap we are fixing;
+               * this measures the gap the fix leaves behind. The candidate
+               * was frozen at the warn, and whatever the subspace did between
+               * the warn and now, it did without it.
                *
                *   staleness = angle(oja_cand, oja_avg) [radians]
                *
@@ -547,9 +614,10 @@ int main(int argc, char *argv[]) {
                * perfect replacement; staleness equal to theta_max means it
                * bought nothing.
                *
-               * Both bases must be orthonormal or these are not angles. oja_avg
-               * was straightened at the top of this block; oja_cand is a copy
-               * of a straightened basis that no oja_update ever touches. */
+               * Both bases must be orthonormal or these are not angles.
+               * oja_avg was straightened at the top of this block; oja_cand
+               * is a copy of a straightened basis that no oja_update ever
+               * touches. */
               double staleness = 0.0;
               int stale_rc = subspace_angles(&oja_cand, &oja_avg,
                                              angles_scratch, NULL, &staleness);
@@ -575,6 +643,14 @@ int main(int argc, char *argv[]) {
                 goto cleanup;
               }
               symbol_basis = &oja_frozen;
+              // The dictionary is in sorted position order now, so the basis
+              // that writes has to agree. Letter j and cut point row j must
+              // describe the same direction
+              if (oja_permute_rows(&oja_frozen, perm) != 0) {
+                fprintf(stderr, "Error: could not reorder the frozen basis\n");
+                t_algo += now_seconds() - t0;
+                goto cleanup;
+              }
 
               /* TODO 3: Καθαρισμός του κύριου ring */
               pring_reset(&ring);
@@ -641,8 +717,8 @@ int main(int argc, char *argv[]) {
       warm_count++;
 
       if (warm_count == cfg.warmup) {
-        if (build_dictionary(&cfg, warmup_proj, warm_count, "warmup", ev, bits,
-                             alphabet_arr, bkpt, NULL) != 0) {
+        if (build_dictionary(&cfg, warmup_proj, warm_count, "warmup", perm, ev,
+                             bits, alphabet_arr, bkpt, NULL) != 0) {
           fprintf(stderr, "Error: Could not build dictionary\n");
           t_algo += now_seconds() - t0;
           goto cleanup;
@@ -667,6 +743,11 @@ int main(int argc, char *argv[]) {
           goto cleanup;
         }
         symbol_basis = &oja_frozen;
+        if (oja_permute_rows(&oja_frozen, perm) != 0) {
+          fprintf(stderr, "Error: could not reorder the frozen basis\n");
+          t_algo += now_seconds() - t0;
+          goto cleanup;
+        }
         pring_reset(&ring);
         have_bkpt = 1;
         free(warmup_proj);
@@ -774,6 +855,7 @@ cleanup:
   free(alphabet_arr);
   free(angles_scratch);
   free(angles);
+  free(perm);
   oja_free(&oja_live);
   oja_free(&oja_frozen);
   oja_free(&oja_avg);
