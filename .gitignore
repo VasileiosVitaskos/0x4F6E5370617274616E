@@ -15,3 +15,5 @@ __pycache__/
 debug_tests/out/
 synthetic_tests/out/
 dataset_tests/out/
+*.log
+w*.csv
