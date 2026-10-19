@@ -1,19 +1,6 @@
-# binaries
-spartan
-spartan_dbg
-spartan_toy
-spartan_toy_dbg
-test_daa
-test_ring
-test_svd
-*.o
-#python
-.venv/
+build/
+tests/*/out/
+scratch/
 __pycache__/
+venv/
 *.pyc
-#testing products
-debug_tests/out/
-synthetic_tests/out/
-dataset_tests/out/
-*.log
-w*.csv

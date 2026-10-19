@@ -15,3 +15,7 @@ drift    = overlap 1.260e-01, length 6.868e-02 (averaged basis between straighte
 drift raw= overlap 4.332e-01, length 2.128e-02 (raw Oja, watch it for a step that is too big)
 noise    = 22.612 deg worst (averaged basis against the raw one, how much of any displacement is ours)
 rate     = 1.7759 deg/window worst smoothed
+overshoot= 2.1838 deg worst past the policy when first seen
+epochs   = 2 re-basings after the warm-up one
+late     = 5 windows worst spent past the policy waiting for a full candidate ring
+staleness= 35.122 deg worst (how far the incoming basis already was from the data when it took over)
