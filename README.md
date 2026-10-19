@@ -14,10 +14,6 @@
   <img alt="status"     src="https://img.shields.io/badge/status-research%20prototype-39FF14?style=flat-square&labelColor=0D1117">
 </p>
 
-
-**A symbolic representation for unbounded time-series streams, whose distance stays a
-valid lower bound while the subspace underneath it moves.**
-
 SPARTAN turns a time series into a short word by projecting it onto its principal
 components and quantising each coordinate, spending more alphabet on the directions
 that carry more variance. It assumes a corpus: one pass over everything, one PCA, one
@@ -35,6 +31,7 @@ intact across every change it makes.
 - [Background](#background)
 - [The pipeline](#the-pipeline)
 - [Design principles](#design-principles)
+- [Requirements](#requirements)
 - [Build and run](#build-and-run)
 - [Settings](#settings)
 - [What a run writes](#what-a-run-writes)
@@ -54,9 +51,9 @@ one.
 
 Doing this on a stream raises a problem the batch setting never faces. The basis is
 learned, and a learned basis drifts: partly because the data genuinely changes, partly
-because the estimator itself never stops moving. Freeze the basis and the representation
-goes stale. Follow it and words written minutes apart live in different coordinate
-systems and cannot be compared.
+because the estimator itself never stops moving. Freeze the basis and the
+representation goes stale. Follow it and words written minutes apart live in different
+coordinate systems and cannot be compared.
 
 Online SPARTAN resolves this with **epochs**. Within an epoch one frozen basis writes
 every word, so words are mutually comparable by construction. Between epochs the
@@ -68,8 +65,8 @@ makes the search slower, and the user decides how much slowness to accept.
 
 ## The pipeline
 
-Each window passes through the same seven stages. Stages 1 to 4 run every window;
-stage 5 runs periodically; stages 6 and 7 run once per epoch.
+Each window passes through the same seven stages. Stages 1 to 4 run every window,
+stage 5 runs periodically, and stages 6 and 7 run once per epoch.
 
 **1. Normalise and centre.** Each channel of the window is z-normalised on its own, then
 the running mean of the stream is subtracted. The mean is maintained incrementally, so
@@ -79,18 +76,18 @@ no window is ever stored for this purpose.
 with deflation so later directions only see what earlier ones left behind. The step is
 divided by the window length, so one setting means the same thing at every window size.
 
-**3. Smooth.** Oja with a constant step does not converge to a point instead it settles into a
-cloud. A Polyak–Ruppert average of the raw iterate cancels what the wandering adds, and
+**3. Smooth.** Oja with a constant step does not converge to a point; it settles into a
+cloud. A Polyak-Ruppert average of the raw iterate cancels what the wandering adds, and
 it is the averaged basis, not the raw one, that the rest of the system uses.
 
 **4. Straighten.** Averaging unit vectors does not give a unit vector, and averaging
-perpendicular ones does not give perpendicular ones. Gram–Schmidt restores
+perpendicular ones does not give perpendicular ones. Gram-Schmidt restores
 orthonormality periodically. This is also the only moment at which an angle between two
 bases means anything, which is why every measurement is scheduled against it.
 
 **5. Measure.** Principal angles between the frozen basis and the working one give the
-displacement and principal angles between the averaged and raw bases give the estimator's
-own tremble, with the signal removed. A smoothed derivative gives the rate.
+displacement; principal angles between the averaged and the raw basis give the
+estimator's own tremble, with the signal removed. A smoothed derivative gives the rate.
 
 **6. Allocate and quantise.** Variance per projected coordinate gives the importance of
 each position. A dynamic program splits the bit budget across positions. Breakpoints are
@@ -98,8 +95,8 @@ empirical quantiles of the collected projections, and each coordinate becomes a 
 
 **7. The epoch gate.** When the projected angle plus a margin would reach the user's
 policy before a replacement could be prepared, a candidate basis is frozen and a second
-ring of projections begins filling behind the one in use — one stream, two projections.
-When the policy is crossed and the candidate is ready, it is promoted: a new dictionary
+ring of projections begins filling behind the one in use: one stream, two projections.
+When the policy is crossed and the candidate is ready, it is promoted. A new dictionary
 is built from its ring, the candidate becomes the writing basis, and a new epoch opens.
 If the policy is crossed before the candidate is ready, the old basis keeps writing and
 the wait is measured rather than hidden.
@@ -120,24 +117,24 @@ position already holds, the less it is willing to pay for another. Positions bid
 highest bid takes the next bit, and every bid falls as its owner accumulates.
 
 This framing is not decoration. It gives a cheap online test for whether the current
-split has gone stale: compute the best bid still outstanding — the largest gain from
-granting one more bit — and the best ask — the smallest loss from taking one away. A
-positive spread means a profitable trade exists and the allocation no longer fits the
-data. The spread is reported every window and costs a handful of operations.
+split has gone stale: compute the best bid still outstanding, which is the largest gain
+from granting one more bit, and the best ask, which is the smallest loss from taking one
+away. A positive spread means a profitable trade exists and the allocation no longer
+fits the data. The spread is reported every window and costs a handful of operations.
 
 The split itself is solved exactly by a dynamic program rather than greedily, because
 the budget is finite and a constraint couples the positions: no position may receive
 more bits than the one before it. That constraint is a theorem only when importances
 arrive in descending order, which a batch PCA guarantees and a streaming estimator does
-not — so the order is imposed before the split, not assumed.
+not, so the order is imposed before the split rather than assumed.
 
 ### A turning basis costs speed, never correctness
 
 Projection onto any orthonormal basis is a contraction: it cannot increase a distance.
 The lower bound therefore holds for a word written by any such basis, however poorly
-that basis fits the data. A basis that has turned away from the data keeps less variance,
-so the bound is looser, so fewer candidates are discarded. The search gets slower and
-the answer stays exact.
+that basis fits the data. A basis that has turned away from the data keeps less
+variance, so the bound is looser, so fewer candidates are discarded. The search gets
+slower and the answer stays exact.
 
 This is why the angle threshold is a **policy** and not a safety limit. It is the user
 stating how much pruning power they are willing to lose before paying for a new epoch.
@@ -156,11 +153,11 @@ and how much of the observed displacement was the estimator rather than the data
 
 ### Three bases, one job each
 
-- **live** — the raw Oja iterate. Trembles. Watched as an early warning that the step is
+- **live**: the raw Oja iterate. Trembles. Watched as an early warning that the step is
   too large.
-- **averaged** — the smoothed copy. Where the data is *now*. Everything measures against
+- **averaged**: the smoothed copy. Where the data is *now*. Everything measures against
   it.
-- **frozen** — writes the letters. Never moves within an epoch, which is what makes the
+- **frozen**: writes the letters. Never moves within an epoch, which is what makes the
   words of an epoch mutually comparable.
 
 A fourth, the **candidate**, exists only while a replacement is being prepared. It is a
@@ -179,17 +176,21 @@ verifier does exactly that and compares letter by letter.
 
 | | |
 | --- | --- |
-| Compiler |  C11 compiler or clang, tested on gcc 13.4 |
+| Compiler | gcc or clang, tested on gcc 13.4 |
 | Platform | POSIX. `clock_gettime` needs `_POSIX_C_SOURCE 200809L`, already set |
 | Build | GNU make |
 | Debug build | AddressSanitizer and UndefinedBehaviorSanitizer |
-| Tools | Python 3.8+, standard library only |
+| Tools | Python 3.8+, standard library only, except `make_datasets.py` which needs NumPy |
 
 No third-party C libraries. The program links only `libm`.
 
-One C11 feature is used that the standard marks optional: variable length
-arrays in the dictionary builder, and nothing else. A compiler that defines
-`__STDC_NO_VLA__` will not build it as written.
+Two things are used that plain C11 does not guarantee, which is why the compiler is
+named rather than the standard. Variable length arrays, in the dictionary builder: C11
+marks them optional, and a compiler defining `__STDC_NO_VLA__` will not build it as
+written. And `__builtin_ctz`, in the alphabet limit: a GNU extension that gcc and clang
+both provide.
+
+---
 
 ## Build and run
 
@@ -197,6 +198,7 @@ arrays in the dictionary builder, and nothing else. A compiler that defines
 make            release build, -O2
 make debug      -O0 with AddressSanitizer and UndefinedBehaviorSanitizer
 make check      run the built-in demo and diff against the golden files
+make verify     run the demo, then rebuild every letter from the written files alone
 make golden     regenerate the golden files, after reading the diff
 make unit       build and run the C unit tests
 make clean      remove build/ and every tests/*/out/
@@ -216,32 +218,37 @@ The regression target is parameterised by the test folder:
 
 ```
 make check
-make check TEST=synthetic CFG=tests/synthetic/cfg/stationary.cfg
+make check TEST=synthetic CFG=tests/synthetic/cfg/stationary_theta89.cfg
 ```
+
+The folder named by `out_dir` must already exist. The program does not create it, and a
+run whose output folder is missing stops with an error on stderr, so do not discard
+stderr while setting a run up.
 
 ---
 
 ## Settings
 
-One `key = value` per line, `#` begins a comment, an unknown key is an error rather than
-a shrug. The ones that change behaviour most:
+One `key = value` per line, `#` begins a comment, and an unknown key is an error rather
+than a shrug. The ones that change behaviour most:
 
 | key | meaning |
 | --- | --- |
+| `input` | data file, one frame per line; `builtin` for the demo array |
 | `components` | how many principal directions, and therefore letters per word |
 | `window` | frames per window |
-| `channels` | channels per frame so a window is `channels * window` numbers |
-| `stride` | how far the window advances |
-| `total_bits` | the budget split across positions |
+| `channels` | channels per frame, so a window is `channels * window` numbers |
+| `stride` | how far the window advances, between 1 and `window` |
+| `total_bits` | the budget split across positions, at least `components` |
 | `lambda` | how strongly the split is pulled toward the even allocation |
-| `step` | Oja step, divided by the window length internally |
-| `basis_average` | how fast the smoothed basis follows the raw one |
+| `step` | Oja step, divided by the window length internally; `0.24` is the measured default |
+| `basis_average` | how fast the smoothed basis follows the raw one, between 0 and 1 |
 | `gs_period` | windows between orthonormalisations |
-| `angle_period` | windows between angle measurements must be a multiple of `gs_period` |
-| `theta_threshold_deg` | the policy: how far the basis may turn before the epoch closes |
+| `angle_period` | windows between angle measurements; must be a multiple of `gs_period` |
+| `theta_threshold_deg` | the policy: how far the basis may turn before the epoch closes. Above 0 and below 90 |
 | `ring_window` | projections collected before a replacement dictionary is built |
 | `warmup` | windows collected before the first dictionary |
-| `out_dir` | The folder where files for each epoch are saved, and if left empty, no files will be written|
+| `out_dir` | folder for the per-epoch files; empty writes none, and the folder must exist |
 
 ---
 
@@ -256,39 +263,55 @@ With `out_dir` set, each epoch leaves three artefacts behind:
 | `epochs.csv` | one line per epoch: first window, the angle it was cut at, the staleness of the incoming basis, the objective its split reached |
 
 `epochs.csv` has no "last window" column by design. An epoch ends where the next one
-begins, and the last one ends with the stream.
+begins, and the last one ends with the stream, so there is no field that has to be
+revisited after it is written.
 
 ---
 
 ## Verification
 
-**Unit tests** (`make unit`) pin the dynamic program and the projection ring against computed expectations, including the cases where this implementation deliberately
-departs from the batch reference SPARTAN.
+Three independent layers, each catching what the others cannot.
+
+**Unit tests** (`make unit`) pin the dynamic program and the projection ring against
+hand-computed expectations, including the cases where this implementation deliberately
+departs from the batch reference.
 
 **Golden files** (`make check`) prove that a change did not alter the output. They say
-nothing about whether the output is right. Mainly for debugging purposes and moving step by step without breaking between commits
+nothing about whether the output is right. Their job is to let the work move one step at
+a time without silently breaking something between commits.
 
-**The verifier** (`tools/verify_words.py`). It reads only the
-per-epoch files and the raw stream, recomputes every projection and every letter from
-scratch, and compares. It does not read the C source. Agreement means the freeze, the
-promotion, the row ordering and the breakpoints are consistent with each other and with
-what was written to disk.
+**The verifier** (`make verify`, or `tools/verify_words.py` directly) is the layer that
+does. It reads only the per-epoch files and the raw stream, recomputes every projection
+and every letter from scratch, and compares. It does not read the C source. Agreement
+means the freeze, the promotion, the row ordering and the breakpoints are consistent
+with each other and with what was written to disk.
 
 ```
 python3 tools/verify_words.py tests/demo/out/epochs tests/demo/out/words.csv
 ```
+
+On the demo stream the verifier reports three windows out of 190 where the letter
+differs. In every case the projection sits one or two units in the last place away from
+a cut point, because the C sums its dot product in four partial accumulators and the
+Python sums left to right. The `-O0` and `-O2` builds of the C agree bit for bit with
+each other, so this is the boundary between two correct summations and not a defect.
+It is recorded here because it is also a warning: anything that changes the summation
+order, such as `-ffast-math` or hand-written SIMD, will move those words.
 
 ---
 
 ## Repository layout
 
 ```
-src/            the program: maths, stream, settings, driver
-tests/unit/     C unit tests, each with its own main
-tests/demo/     the built-in stream: cfg, expected, out
-tests/synthetic/  generated data with known properties
-tests/real/     archive datasets
-tools/          data generation, verification and comparison, in Python
-build/          every binary, not tracked
+src/              the program: maths, stream, settings, driver
+tests/unit/       C unit tests, each with its own main
+tests/demo/       the built-in stream: cfg, expected, out
+tests/synthetic/  generated data with known answers: cfg, data, truth, out
+tests/real/       archive datasets
+tools/            generation, conversion and verification, in Python
+build/            every binary, not tracked
 ```
 
+Headers live beside their sources on purpose: a quoted include searches the including
+file's own directory first, so nothing in `src/` needs an include path. The unit tests
+sit outside that directory and are given `-Isrc`.
