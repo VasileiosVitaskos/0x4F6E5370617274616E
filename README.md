@@ -1,11 +1,20 @@
-# Online SPARTAN
+<h1 align="center">Online SPARTAN</h1>
 
-![Language](https://img.shields.io/badge/language-C11-39FF14?style=for-the-badge)
-![Compiler](https://img.shields.io/badge/gcc-13.4%20tested-39FF14?style=for-the-badge)
-![Build](https://img.shields.io/badge/build-make-39FF14?style=for-the-badge)
-![Tests](https://img.shields.io/badge/tests-unit%20%2B%20golden-39FF14?style=for-the-badge)
-![Sanitizers](https://img.shields.io/badge/asan%20%2F%20ubsan-clean-39FF14?style=for-the-badge)
-![Status](https://img.shields.io/badge/status-research%20prototype-39FF14?style=for-the-badge)
+<p align="center">
+  <em>A symbolic representation for unbounded time-series streams, whose distance<br>
+  stays a valid lower bound while the subspace underneath it moves.</em>
+</p>
+
+<p align="center">
+  <img alt="language"   src="https://img.shields.io/badge/language-C11-39FF14?style=flat-square&labelColor=0D1117">
+  <img alt="compiler"   src="https://img.shields.io/badge/gcc-13.4-39FF14?style=flat-square&labelColor=0D1117&logo=gnu&logoColor=39FF14">
+  <img alt="build"      src="https://img.shields.io/badge/build-make-39FF14?style=flat-square&labelColor=0D1117">
+  <img alt="tests"      src="https://img.shields.io/badge/tests-unit%20%7C%20golden%20%7C%20replay-39FF14?style=flat-square&labelColor=0D1117">
+  <img alt="sanitizers" src="https://img.shields.io/badge/asan%20%7C%20ubsan-clean-39FF14?style=flat-square&labelColor=0D1117">
+  <img alt="status"     src="https://img.shields.io/badge/status-research%20prototype-39FF14?style=flat-square&labelColor=0D1117">
+</p>
+
+SPARTAN turns a time series into a short word by projecting it onto its principal
 
 **A symbolic representation for unbounded time-series streams, whose distance stays a
 valid lower bound while the subspace underneath it moves.**
