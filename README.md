@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img alt="language"   src="https://img.shields.io/badge/language-C11-39FF14?style=flat-square&labelColor=0D1117">
+  <img alt="language"   src="https://img.shields.io/badge/language-C11-39FF14?style=flat-square&labelColor=0D1117&logo=c&logoColor=39FF14">
   <img alt="compiler"   src="https://img.shields.io/badge/gcc-13.4-39FF14?style=flat-square&labelColor=0D1117&logo=gnu&logoColor=39FF14">
   <img alt="build"      src="https://img.shields.io/badge/build-make-39FF14?style=flat-square&labelColor=0D1117">
   <img alt="tests"      src="https://img.shields.io/badge/tests-unit%20%7C%20golden%20%7C%20replay-39FF14?style=flat-square&labelColor=0D1117">

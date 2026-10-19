@@ -1,62 +1,104 @@
 #!/usr/bin/env python3
-"""Synthetic datasets for Online SPARTAN, each with its answer.
+"""Synthetic datasets for the Online SPARTAN / batch SPARTAN comparison.
 
-The signal is built backwards, from the answer. We choose r orthonormal
+Three runs, two data files. The point of each one is to remove a suspect:
+
+    D1  stationary, theta = 89 deg   one epoch, the gate never opens.
+        Any disagreement with spartan.py here is NOT the epoch machinery.
+        It is one of four things: Oja's subspace estimate against exact PCA,
+        the bit allocation, the breakpoints, or the digitize convention.
+
+    D2  stationary, theta = 45 deg   THE SAME BYTES as D1, one line changed.
+        Now the gate opens on Oja's own wander, on data that does not move.
+        D2 minus D1 is the cost of the epoch mechanism on stationary data,
+        measured with the data held exactly fixed.
+
+    D3  degenerate span               two equal top shares, so the top plane
+        has no preferred rotation inside it. The directions wander, the
+        SPAN does not move at all. Every epoch here is self-inflicted.
+
+The signal is built backwards from the answer. We pick k orthonormal
 directions w_i in R^m and an amplitude lambda_i for each, and a window is
 
-    x = sum_i sqrt(lambda_i) * g_i * w_i  +  sigma * n,     g_i, n ~ N(0, 1)
+    x = sum_i sqrt(lambda_i) * g_i * w_i  +  sigma * n,    g_i, n ~ N(0,1)
 
-so the two things the algorithm estimates, the directions and the variance
-shares, are both things we chose. That buys the separation the whole test plan
-rests on:
+so the directions and the variance shares are both things we chose, not
+things we hope for.
 
-    a type 1 event changes the lambdas and leaves the w alone
-        -> the subspace does not move, the shares do
-        -> the angle must stay at zero, the gap must rise
+The truth file does NOT record the lambdas. The C z-normalises every window
+before it sees it, which changes the covariance, so the lambdas are not what
+the algorithm is trying to estimate. What the truth records instead is what
+BATCH PCA says about the windows actually written, after the same
+normalisation. That is the offline answer on the same numbers, which is the
+only reference worth comparing an online estimate against, and it doubles as
+the batch SPARTAN baseline.
 
-    a type 2 event rotates the w and leaves the lambdas alone
-        -> the subspace moves, the shares do not
-        -> the angle must rise, the gap must stay at zero
+The w are chosen orthogonal to the all-ones vector, so that removing a
+window's mean does not disturb them.
 
-Each detector is then independently falsifiable: in a pure type 1 set, any
-angle above the floor is a false positive, and in a pure type 2 set, any gap is.
-
-The truth file does NOT record the lambdas we chose. The C z-normalises every
-window before it sees it, which changes the covariance, so the lambdas are not
-what the algorithm is trying to estimate. What it records instead is what BATCH
-PCA says about the windows actually written, after the same normalisation. That
-is the offline answer on the same data, which is the only reference worth
-comparing an online estimate against, and it doubles as the batch SPARTAN
-baseline.
-
-The w are chosen orthogonal to the all-ones vector, so that removing a window's
-mean does not disturb them.
-
-    python3 make_datasets.py            writes everything into ./datasets
-    python3 make_datasets.py --list     prints the plan and writes nothing
+    python3 tools/make_datasets.py           write everything under tests/synthetic
+    python3 tools/make_datasets.py --list    print the plan, write nothing
 """
 
+import argparse
 import json
 import os
 import sys
 
 import numpy as np
 
-M_TIME = 32          # numbers per window; also the stride, so no overlap
-K = 3                # kept directions, and letters per word
-TOTAL_BITS = 6
-LAMBDA_REG = 0.5
-WARMUP = 200         # 10 * the largest alphabet, which is the code's own rule
-RING_W = 200
-OUT = "datasets"
+# --------------------------------------------------------------------------
+# Geometry. UCR scale: a window of 256 is a typical series length in the UCR
+# classification archive, which is the archive SPARTAN's own experiments use.
+# The demo runs at m = 8, which hides every cost that grows with m: Gram-
+# Schmidt is O(k^2 m), the Oja step is O(k m), and an accidental O(m^2) is
+# invisible at 8 and obvious at 256.
+# --------------------------------------------------------------------------
+
+M_TIME = 256  # numbers per window
+CHANNELS = 1
+STRIDE = M_TIME  # no overlap: each window is an independent draw, and
+# the UCR classification archive is separate series too
+K = 8  # kept directions, and letters per word
+TOTAL_BITS = 16  # even split would be 2 bits per position
+LAMBDA_REG = 0.5  # how hard the objective pulls towards the even split
+MAX_BITS = 8  # must equal MAX_BITS in src/spartan.h
+N_WINDOWS = 4000  # 4000 * 256 = 1,024,000 samples, about 25 MB per file
+SIGMA = 0.20  # isotropic noise added to every window
+WARMUP = 512  # windows collected before the first dictionary
+
+OUT = os.path.join("tests", "synthetic")
+
+# Shares we want to SEE IN THE FILE after z-norm, not the lambdas we feed in.
+# A moderate decay: steep enough that the allocation is lopsided and the
+# sorting invariant matters, flat enough that the tail positions still get
+# bits. Must sum to 1.
+SHARES_STATIONARY = [0.30, 0.20, 0.14, 0.10, 0.08, 0.07, 0.06, 0.05]
+
+# Same tail, but the top two are EQUAL. That is what makes the top plane
+# degenerate: no rotation inside it is more correct than any other.
+SHARES_DEGENERATE = [0.25, 0.25, 0.14, 0.10, 0.08, 0.07, 0.06, 0.05]
+
+# D3 rotation: mix rows 0 and 1 with each other, theta ramping over this span.
+ROT_T0, ROT_T1, ROT_THETA = 1000, 3000, 1.2  # radians
 
 
-# ----------------------------------------------------------------- geometry
+# --------------------------------------------------------------------------
+# geometry helpers
+# --------------------------------------------------------------------------
+
 
 def orthonormal_basis(rng, m, count, forbidden):
-    """count orthonormal vectors in R^m, all orthogonal to every row of
-    forbidden. Modified Gram-Schmidt, twice: one pass leaves an orthogonality
-    error around 1e-13, which would quietly become part of the answer."""
+    """count orthonormal vectors in R^m, every one orthogonal to every row of
+    forbidden.
+
+    Modified Gram-Schmidt run TWICE. One pass leaves an orthogonality error
+    around 1e-13, which would quietly become part of the answer: the whole
+    design rests on the span being exactly what we chose, and a 1e-13 leak is
+    larger than the 1e-12 tolerance the D3 assert uses.
+
+    Returns an array of shape (count, m).
+    """
     out = []
     while len(out) < count:
         v = rng.standard_normal(m)
@@ -67,453 +109,444 @@ def orthonormal_basis(rng, m, count, forbidden):
                 v -= np.dot(v, u) * u
         nrm = np.linalg.norm(v)
         if nrm < 1e-8:
-            continue
+            continue  # drew something in the killed span
         out.append(v / nrm)
     return np.array(out)
 
 
-def rotate_in_plane(W, i, axis, theta):
-    """Rotate row i of W by theta towards axis, inside the plane they span.
-    axis must be a unit vector orthogonal to row i. Returns a new W."""
-    out = W.copy()
-    out[i] = np.cos(theta) * W[i] + np.sin(theta) * axis
-    return out
-
-
 def principal_angles(A, B):
-    """The principal angles between the row spaces of A and B, both with
-    orthonormal rows. Exact here because we know A and B on paper."""
+    """Principal angles, in radians, between the row spaces of A and B.
+
+    Both must have orthonormal rows. The singular values of A @ B.T are the
+    cosines of the principal angles, so arccos of them is the answer. This
+    measures the SUBSPACE, not the individual vectors: rotating a basis
+    inside its own span leaves every principal angle at zero, which is
+    exactly the property D3 exists to test.
+    """
     sv = np.linalg.svd(A @ B.T, compute_uv=False)
     return np.arccos(np.clip(sv, -1.0, 1.0))
 
 
-# ----------------------------------------------------------------- schedules
-
-def ramp(t, t0, t1, a, b):
-    """a before t0, b after t1, straight line in between."""
-    if t <= t0:
-        return a
-    if t >= t1:
-        return b
-    f = (t - t0) / (t1 - t0)
-    return a + f * (b - a)
+# --------------------------------------------------------------------------
+# the objective, computed the slow obvious way
+# --------------------------------------------------------------------------
 
 
-def calibrate_lambda(target, sigma, W, rng_seed=99, iters=25, n=4000):
-    """Find the amplitudes that make the BATCH shares come out equal to target.
+def best_split(shares, total_bits=TOTAL_BITS, lam=LAMBDA_REG, max_bits=MAX_BITS):
+    """The optimal bit allocation for these importances, by exhaustive search
+    over every non-increasing allocation that spends the budget exactly.
 
-    There is no usable formula for this. The z-norm divides each window by its
-    own spread, which is dominated by whichever direction is largest in that
-    window, so it compresses the gaps between directions by an amount that
-    depends on the whole configuration. Asking for 0.62 of the variance on the
-    first direction and setting lambda to 0.62 gives about 0.49 in the file.
+    The objective, per position i with importance e_i and bits b_i:
 
-    So it is solved numerically: measure, scale each amplitude by how far off
-    its share is, repeat. Converges to machine precision in about twenty
-    passes. The fixed seed keeps the measurement from wandering between passes,
-    which is what makes it converge instead of chase noise.
+        gain_i = b_i * e_i  -  lam * (b_i - ref)^2 * e_i
+        ref    = total_bits // k            (the even split, in bits)
+
+    Slow and obviously correct, which is what a reference is for. The C
+    computes the same thing with a dynamic program; if the two ever disagree,
+    the DP is wrong, not this.
+
+    Note b_i may be ZERO here. The batch reference uses a floor of 1 bit per
+    position; we allow 0, and that difference is one of the things the
+    comparison is meant to quantify.
+
+    Returns (allocation as a list, objective value).
     """
-    target = np.asarray(target, dtype=float)
-    lam = target * 12.0
-    for _ in range(iters):
-        got = measure_shares(lam, W, sigma, rng_seed, n)
-        lam = lam * (target / np.maximum(got, 1e-12))
-        lam = lam / lam.sum() * 12.0
-    return lam
+    best, best_score = None, -1e18
+    k = len(shares)
+    ref = total_bits // k
+
+    def rec(i, left, prev, acc):
+        nonlocal best, best_score
+        if i == k:
+            if left != 0:
+                return
+            sc = sum(b * e - lam * (b - ref) ** 2 * e for b, e in zip(acc, shares))
+            if sc > best_score:
+                best_score, best = sc, list(acc)
+            return
+        # non-increasing: never more than the position before it
+        for b in range(min(prev, max_bits, left), -1, -1):
+            acc.append(b)
+            rec(i + 1, left - b, b, acc)
+            acc.pop()
+
+    rec(0, total_bits, max_bits, [])
+    return best, best_score
 
 
-def measure_shares(lam, W, sigma, rng_seed, n):
-    rng = np.random.default_rng(rng_seed)
-    g = rng.standard_normal((n, len(lam)))
-    X = (g * np.sqrt(lam)) @ W + sigma * rng.standard_normal((n, W.shape[1]))
-    mu = X.mean(axis=1, keepdims=True)
-    sd = np.sqrt(((X - mu) ** 2).mean(axis=1, keepdims=True)) + 1e-12
-    return batch_shares((X - mu) / sd)
+def ring_window_for(shares):
+    """The ring size the collected-quantile rule demands for these shares.
+
+    A breakpoint is an empirical quantile of the projections in the ring. With
+    an alphabet of A you are asking for A-1 cut points, so the ring needs
+    enough points that each cell holds a meaningful count; the rule we settled
+    on is ten points per cell:
+
+        ring_window >= 10 * (largest alphabet across positions)
+
+    Computed rather than chosen, so it cannot silently fall out of step with
+    the bit budget. Floor of 512 so the warm-up is never the binding limit.
+    """
+    bits, _ = best_split(shares)
+    largest_alphabet = 1 << max(bits)
+    return max(512, 10 * largest_alphabet)
 
 
-def shares_at(t, schedule):
-    """schedule is a list of (t0, t1, shares_before, shares_after) ramps applied
-    in order; the last one that has started wins."""
-    cur = np.array(schedule[0][2], dtype=float)
-    for t0, t1, a, b in schedule:
-        if t >= t0:
-            cur = np.array([ramp(t, t0, t1, a[i], b[i]) for i in range(len(a))])
-    return cur / cur.sum()
+# --------------------------------------------------------------------------
+# calibration: solve for the amplitudes that produce the shares we asked for
+# --------------------------------------------------------------------------
 
-
-# ----------------------------------------------------------------- scenarios
-
-def scenario_specs():
-    """Each entry says how the shares and the rotation move over time, and what
-    the run is supposed to demonstrate. n is the number of windows."""
-    return [
-        dict(
-            name="e1_type1_must_not_fire",
-            n=3000, sigma=0.20, outlier_rate=0.0,
-            # Drifts a long way and stops just short of the point where the
-            # best bit split changes. Every window still wants 3 2 1.
-            shares=[(0, 0, [0.62, 0.26, 0.12], [0.62, 0.26, 0.12]),
-                    (400, 2600, [0.62, 0.26, 0.12], [0.560, 0.260, 0.180])],
-            rotation=None,
-            expect=dict(
-                events=[],
-                angle="must stay at the resolution floor, under 1e-5 rad",
-                gap="rises and stays up, but never justifies a re-tuning",
-                note="a threshold read off the gap alone produces false "
-                     "positives here; the allocation never changes",
-            ),
-        ),
-        dict(
-            name="e2_type2_must_not_fire",
-            n=3000, sigma=0.20, outlier_rate=0.0,
-            # Two equal shares make the top plane degenerate: no rotation inside
-            # it is more correct than another, so the live directions are free
-            # to wander. The SUBSPACE never moves.
-            shares=[(0, 0, [0.40, 0.40, 0.20], [0.40, 0.40, 0.20])],
-            calibrate=False,   # see below
-            rotation=dict(kind="inside", i=0, j=1, t0=600, t1=2400,
-                          theta=1.2),
-            expect=dict(
-                events=[],
-                angle="exactly zero throughout, because the span is unchanged",
-                gap="zero, because the shares are unchanged",
-                note="degenerate top eigenvalues, the classic hard case. A "
-                     "detector that measures angles between VECTORS screams "
-                     "here; one that measures principal angles says nothing.",
-            ),
-        ),
-        dict(
-            name="t1_easy",
-            n=3000, sigma=0.15, outlier_rate=0.0,
-            shares=[(0, 0, [0.75, 0.18, 0.07], [0.75, 0.18, 0.07]),
-                    (1500, 1500, [0.75, 0.18, 0.07], [0.40, 0.35, 0.25])],
-            rotation=None,
-            expect=dict(
-                events=[dict(window=1500, type="retune")],
-                angle="at the floor throughout",
-                gap="near zero before 1500, a step up after it",
-                note="the allocation crosses from 3 2 1 to 2 2 2",
-            ),
-        ),
-        dict(
-            name="t1_hard",
-            n=4000, sigma=0.45, outlier_rate=0.01,
-            shares=[(0, 0, [0.75, 0.18, 0.07], [0.75, 0.18, 0.07]),
-                    (1200, 2800, [0.75, 0.18, 0.07], [0.40, 0.35, 0.25])],
-            rotation=None,
-            expect=dict(
-                events=[dict(window=None, type="retune")],
-                angle="at the floor throughout",
-                gap="climbs slowly through the ramp",
-                note="the question is not whether it is detected but HOW LATE. "
-                     "The crossing window is computed below and stored.",
-            ),
-        ),
-        dict(
-            name="t2_pure",
-            n=4000, sigma=0.20, outlier_rate=0.0,
-            shares=[(0, 0, [0.70, 0.20, 0.10], [0.70, 0.20, 0.10])],
-            rotation=dict(kind="outside", i=2, t0=1200, t1=2800, theta=0.35),
-            expect=dict(
-                events=[dict(window=1200, type="rebase")],
-                angle="follows the stored true angle, within the lag of the "
-                      "live basis",
-                gap="stays near zero, the shares never move",
-                note="truth.angle_true holds the exact subspace angle per "
-                     "window, so the measured curve can be laid over it",
-            ),
-        ),
-        dict(
-            name="m1_sequential",
-            n=6000, sigma=0.25, outlier_rate=0.0,
-            shares=[(0, 0, [0.72, 0.19, 0.09], [0.72, 0.19, 0.09]),
-                    (1000, 1000, [0.72, 0.19, 0.09], [0.45, 0.33, 0.22]),
-                    (4200, 4200, [0.45, 0.33, 0.22], [0.70, 0.21, 0.09])],
-            rotation=dict(kind="outside", i=2, t0=2200, t1=3200, theta=0.30),
-            expect=dict(
-                events=[dict(window=1000, type="retune"),
-                        dict(window=2200, type="rebase"),
-                        dict(window=4200, type="retune")],
-                angle="flat, then a ramp between 2200 and 3200, then flat",
-                gap="steps at 1000 and at 4200, quiet during the rotation",
-                note="the three events do not overlap, so each path is "
-                     "exercised on its own and the registry order is checkable",
-            ),
-        ),
-        dict(
-            name="m2_overlapping",
-            n=6000, sigma=0.50, outlier_rate=0.02,
-            shares=[(0, 0, [0.72, 0.19, 0.09], [0.72, 0.19, 0.09]),
-                    (2200, 2200, [0.72, 0.19, 0.09], [0.42, 0.34, 0.24])],
-            rotation=dict(kind="outside", i=2, t0=1500, t1=3000, theta=0.40),
-            expect=dict(
-                events=[dict(window=1500, type="rebase"),
-                        dict(window=2200, type="retune_suppressed")],
-                angle="ramps from 1500 to 3000",
-                gap="steps at 2200, in the middle of the rotation",
-                note="THE case. A re-tuning becomes justified at 2200 while a "
-                     "re-basing is already under way. The right answer is to "
-                     "suppress it and let the re-basing do both jobs, so a run "
-                     "that records a retune at 2200 has the policy wrong even "
-                     "though every individual detector was right.",
-            ),
-        ),
-    ]
-
-
-# ----------------------------------------------------------------- generation
-
-def build(spec, seed):
-    """Returns the written windows, the true basis per window, and the realised
-    share curve (what batch PCA will say, measured, per ramp fraction)."""
-    rng = np.random.default_rng(seed)
-    m, n = M_TIME, spec["n"]
-
-    ones = np.ones(m) / np.sqrt(m)
-    W0 = orthonormal_basis(rng, m, K, [ones])
-    # one spare direction, outside the span, for a rotation to move into
-    spare = orthonormal_basis(rng, m, 1, [ones] + list(W0))[0]
-
-    # The schedule is written in terms of the shares we WANT to see in the
-    # file. Solve for the amplitudes that produce them, at every distinct
-    # target in the schedule, then interpolate between those solutions.
-    if not spec.get("calibrate", True):
-        # Two of the targets are deliberately EQUAL here, which makes the
-        # calibration fixed point degenerate: the two directions cannot be
-        # told apart, so correcting one against the other chases the sampling
-        # asymmetry and runs away. This set is not about hitting exact shares,
-        # it is about the span not moving, so the amplitudes are used as given
-        # and the shares that come out are measured and recorded.
-        lam_fixed = np.array(spec["shares"][0][2], dtype=float) * 12.0
-
-        def lam_at(t):
-            return lam_fixed
-    else:
-        lam_at = None
-
-    knots = []
-    for t0, t1, a, b in spec["shares"]:
-        knots += [tuple(np.array(a) / sum(a)), tuple(np.array(b) / sum(b))]
-    knots = list(dict.fromkeys(knots))
-    lam_of = ({kk: calibrate_lambda(kk, spec["sigma"], W0) for kk in knots}
-              if spec.get("calibrate", True) else {})
-
-    def lam_calibrated(t):
-        s = shares_at(t, spec["shares"])
-        # nearest two knots by share distance, blended; with ramps between two
-        # endpoints this is exactly a straight line in amplitude space
-        d = sorted(knots, key=lambda kk: np.sum((np.array(kk) - s) ** 2))
-        if np.allclose(d[0], s, atol=1e-12):
-            return lam_of[d[0]]
-        a, b = d[0], d[1]
-        va, vb = np.array(a), np.array(b)
-        denom = np.sum((vb - va) ** 2)
-        f = 0.0 if denom < 1e-18 else np.clip(np.sum((s - va) * (vb - va)) / denom, 0.0, 1.0)
-        return (1 - f) * lam_of[a] + f * lam_of[b]
-
-    if lam_at is None:
-        lam_at = lam_calibrated
-
-    X = np.empty((n, m))
-    W_of_t = []
-    for t in range(n):
-        lam = lam_at(t)
-
-        W = W0
-        if spec["rotation"] is not None:
-            rot = spec["rotation"]
-            theta = ramp(t, rot["t0"], rot["t1"], 0.0, rot["theta"])
-            if rot["kind"] == "outside":
-                W = rotate_in_plane(W0, rot["i"], spare, theta)
-            else:
-                # inside the span: mix two rows with each other, which changes
-                # the directions and leaves the span untouched
-                i, j = rot["i"], rot["j"]
-                W = W0.copy()
-                W[i] = np.cos(theta) * W0[i] + np.sin(theta) * W0[j]
-                W[j] = -np.sin(theta) * W0[i] + np.cos(theta) * W0[j]
-        W_of_t.append(W)
-
-        g = rng.standard_normal(K)
-        x = (g * np.sqrt(lam)) @ W + spec["sigma"] * rng.standard_normal(m)
-        if spec["outlier_rate"] > 0 and rng.random() < spec["outlier_rate"]:
-            x = x + rng.standard_normal(m) * 6.0 * spec["sigma"]
-        X[t] = x
-
-    # the z-norm the C applies, applied here so the file already holds what the
-    # algorithm will see and the truth is computed on exactly those numbers
-    mu = X.mean(axis=1, keepdims=True)
-    sd = np.sqrt(((X - mu) ** 2).mean(axis=1, keepdims=True)) + 1e-12
-    Z = (X - mu) / sd
-
-    # the realised share curve, measured rather than assumed, one point every
-    # 1 percent of the stream, plus the split each point implies
-    curve = []
-    for frac in np.linspace(0.0, 1.0, 101):
-        t = int(frac * (n - 1))
-        sh = measure_shares(lam_at(t), W0, spec["sigma"], 99, 4000)
-        curve.append(dict(window=t, shares=sh.tolist(),
-                          best_bits=best_split(sh)[0]))
-    return Z, np.array(W_of_t), W0, curve
-
-
-# ----------------------------------------------------------------- the truth
 
 def batch_shares(Z):
     """What offline PCA says about these windows: the shares of the top K
-    eigenvalues among themselves, which is what estimate_eigenvalues computes
-    and what spartan.py reports after its own re-normalisation."""
+    eigenvalues among themselves.
+
+    This is the quantity the C's own eigenvalue estimate is trying to track,
+    and the one spartan.py reports after its re-normalisation, so it is the
+    common ground the two can be compared on.
+
+    Z is (n_windows, m), already z-normalised per window.
+    """
     Zc = Z - Z.mean(axis=0)
     C = Zc.T @ Zc / len(Z)
     w = np.sort(np.linalg.eigvalsh(C))[::-1][:K]
     return w / w.sum()
 
 
-def best_split(shares, total_bits=TOTAL_BITS, lam=LAMBDA_REG, max_bits=4):
-    """The optimal bit split for these shares, by exhaustive search over every
-    non-increasing allocation. Slow and obviously correct, which is what a
-    reference is for; the C does the same thing with dynamic programming."""
-    best, best_score = None, -1e18
-    def rec(i, left, prev, acc):
-        nonlocal best, best_score
-        if i == len(shares):
-            if left != 0:
-                return
-            ref = total_bits // len(shares)
-            sc = sum(b * e - lam * (b - ref) ** 2 * e for b, e in zip(acc, shares))
-            if sc > best_score:
-                best_score, best = sc, list(acc)
-            return
-        for b in range(min(prev, max_bits, left), -1, -1):
-            acc.append(b); rec(i + 1, left - b, b, acc); acc.pop()
-    rec(0, total_bits, max_bits, [])
-    return best, best_score
+def znorm_rows(X):
+    """The per-window z-norm the C applies at spartan.c:34, applied here so
+    the file already holds exactly the numbers the algorithm will see.
+
+    Divides by m, not m-1, and adds SPARTAN_EPS to the deviation so a flat
+    window does not divide by zero. Keep the epsilon in step with
+    SPARTAN_EPS in src/spartan.h.
+    """
+    mu = X.mean(axis=1, keepdims=True)
+    sd = np.sqrt(((X - mu) ** 2).mean(axis=1, keepdims=True)) + 1e-12
+    return (X - mu) / sd
 
 
-def make_truth(spec, Z, W_of_t, curve, seed):
-    n = len(Z)
-    rot = spec["rotation"]
+def measure_shares(lam, W, sigma, seed, n=4000):
+    """Draw n windows with these amplitudes, z-norm them, and report the batch
+    shares that come out. Fixed seed on purpose: see calibrate_lambda."""
+    rng = np.random.default_rng(seed)
+    g = rng.standard_normal((n, len(lam)))
+    X = (g * np.sqrt(lam)) @ W + sigma * rng.standard_normal((n, W.shape[1]))
+    return batch_shares(znorm_rows(X))
 
-    # stable segments: cut at every event the spec declares
-    cross = None
-    first_bits = curve[0]["best_bits"]
-    for pt in curve:
-        if pt["best_bits"] != first_bits:
-            cross = pt["window"]
-            break
-    cuts = sorted({0, n} | {e["window"] for e in spec["expect"]["events"]
-                            if isinstance(e["window"], int)})
-    if rot is not None:
-        cuts = sorted(set(cuts) | {rot["t0"], rot["t1"]})
-    if cross is not None:
-        cuts = sorted(set(cuts) | {cross})
-    segments = []
-    for a, b in zip(cuts[:-1], cuts[1:]):
-        lo, hi = a + (WARMUP if a == 0 else 0), b
-        if hi - lo < 200:
-            continue
-        sh = batch_shares(Z[lo:hi])
-        bits, score = best_split(sh)
-        segments.append(dict(start=lo, end=hi, batch_shares=sh.tolist(),
-                             best_bits=bits, best_score=score))
 
-    # the exact subspace angle against the basis as it was at window 0
-    angle_true = [float(principal_angles(W_of_t[0], W_of_t[t]).max())
-                  for t in range(n)]
+def calibrate_lambda(target, sigma, W, seed=99, iters=25, n=4000):
+    """Find the amplitudes that make the BATCH shares come out equal to target.
 
-    # the window where the best split first changes, read off the measured
-    # share curve rather than estimated from a sliding batch window
-    crossing = None
-    first = curve[0]["best_bits"]
-    for pt in curve:
-        if pt["best_bits"] != first:
-            crossing = pt["window"]
-            break
+    There is no usable formula. The z-norm divides each window by its own
+    spread, and that spread is dominated by whichever direction happens to be
+    largest in that particular window, so the normalisation compresses the
+    gaps between directions by an amount that depends on the whole
+    configuration. Ask for 0.30 on the first direction and set lambda to 0.30
+    and you get about 0.24 in the file.
 
-    # a spec may leave an event window unknown because it depends on where the
-    # ramp crosses; fill it in now that the crossing is measured
-    events = []
-    for e in spec["expect"]["events"]:
-        e = dict(e)
-        if not isinstance(e["window"], int):
-            e["window"] = crossing
-        events.append(e)
+    So it is solved numerically: measure what came out, scale each amplitude
+    by how far short its share fell, repeat. Converges in roughly twenty
+    passes.
 
-    return dict(
-        name=spec["name"], seed=seed,
-        geometry=dict(m_time=M_TIME, channels=1, stride=M_TIME, k=K,
-                      total_bits=TOTAL_BITS, lamda=LAMBDA_REG,
-                      warmup=WARMUP, ring_window=RING_W, n_windows=n),
-        noise=dict(sigma=spec["sigma"], outlier_rate=spec["outlier_rate"]),
-        events=events,
-        expect={kk: vv for kk, vv in spec["expect"].items() if kk != "events"},
-        segments=segments,
-        share_curve=curve,
-        allocation_crossing_window=crossing,
-        angle_true=angle_true,
+    The FIXED SEED is what makes it converge rather than chase its own tail:
+    with a fresh seed each pass, the correction would be fighting sampling
+    noise of the same order as the error it is trying to remove.
+
+    Returns the amplitude vector, normalised so it sums to 12 (an arbitrary
+    overall scale; z-norm removes it anyway).
+    """
+    target = np.asarray(target, dtype=float)
+    lam = target * 12.0
+    for _ in range(iters):
+        got = measure_shares(lam, W, sigma, seed, n)
+        lam = lam * (target / np.maximum(got, 1e-12))
+        lam = lam / lam.sum() * 12.0
+    return lam
+
+
+# --------------------------------------------------------------------------
+# the two generators
+# --------------------------------------------------------------------------
+
+
+def build_stationary(seed):
+    """D1 and D2 share this. Nothing moves: one fixed basis, one fixed share
+    vector, independent draws.
+
+    Returns (Z, angle_true, W0) where Z is (N_WINDOWS, M_TIME) after z-norm
+    and angle_true is identically zero, recorded anyway so every truth file
+    has the same shape.
+    """
+    rng = np.random.default_rng(seed)
+    ones = np.ones(M_TIME) / np.sqrt(M_TIME)
+    W0 = orthonormal_basis(rng, M_TIME, K, [ones])
+
+    lam = calibrate_lambda(SHARES_STATIONARY, SIGMA, W0)
+
+    g = rng.standard_normal((N_WINDOWS, K))
+    X = (g * np.sqrt(lam)) @ W0 + SIGMA * rng.standard_normal((N_WINDOWS, M_TIME))
+    return znorm_rows(X), [0.0] * N_WINDOWS, W0
+
+
+def build_degenerate(seed):
+    """D3. The top two shares are equal, and rows 0 and 1 are rotated into
+    each other over time.
+
+    Because the rotation mixes two rows WITH EACH OTHER, the plane they span
+    is untouched: the pair (cos t, sin t), (-sin t, cos t) is an orthogonal
+    change of basis inside that plane. So every principal angle against the
+    starting basis stays at zero while the individual direction vectors swing
+    through 1.2 radians.
+
+    Calibration is DISABLED here. With two equal targets the fixed point is
+    degenerate: the two directions cannot be told apart, so correcting one
+    against the other chases the sampling asymmetry and runs away. This set is
+    not about hitting exact shares, it is about the span not moving, so the
+    amplitudes are used as given and whatever shares come out are measured and
+    recorded.
+
+    Returns (Z, angle_true, W0). Raises AssertionError if the span moved.
+    """
+    rng = np.random.default_rng(seed)
+    ones = np.ones(M_TIME) / np.sqrt(M_TIME)
+    W0 = orthonormal_basis(rng, M_TIME, K, [ones])
+
+    lam = np.array(SHARES_DEGENERATE, dtype=float) * 12.0
+
+    X = np.empty((N_WINDOWS, M_TIME))
+    angle_true = []
+    worst = 0.0
+    for t in range(N_WINDOWS):
+        # theta ramps 0 -> ROT_THETA across [ROT_T0, ROT_T1], flat outside
+        if t <= ROT_T0:
+            th = 0.0
+        elif t >= ROT_T1:
+            th = ROT_THETA
+        else:
+            th = ROT_THETA * (t - ROT_T0) / (ROT_T1 - ROT_T0)
+
+        W = W0.copy()
+        W[0] = np.cos(th) * W0[0] + np.sin(th) * W0[1]
+        W[1] = -np.sin(th) * W0[0] + np.cos(th) * W0[1]
+
+        a = float(principal_angles(W0, W).max())
+        worst = max(worst, a)
+        angle_true.append(a)
+
+        g = rng.standard_normal(K)
+        X[t] = (g * np.sqrt(lam)) @ W + SIGMA * rng.standard_normal(M_TIME)
+
+    # The whole point of this set. If the span moved, it is not testing what
+    # we think it is testing, and silently producing it would be worse than
+    # producing nothing.
+    assert worst < 1e-12, (
+        "degenerate_span: the subspace MOVED, worst principal angle %.3e rad. "
+        "The rotation is supposed to stay inside the span." % worst
     )
+    return znorm_rows(X), angle_true, W0
 
 
-# ----------------------------------------------------------------- output
+# --------------------------------------------------------------------------
+# output
+# --------------------------------------------------------------------------
 
+# VERIFY THESE THREE LINES against src/config.c before trusting a run:
+#   input          -- the key name for the data file is not confirmed here
+#   step           -- carried over from the old learning_rate = 0.01
+#   basis_average  -- a guess; copy the value from the working demo cfg
+# Everything else comes from the settings table in README.md.
 CFG = """# {name}
-input         = {name}.frames
-channels      = 1
-window        = {m}
-stride        = {m}
-components    = {k}
-total_bits    = {tb}
-lambda        = {lam}
-learning_rate = 0.01
-gs_period     = 5
-warmup        = {warm}
-ring_window   = {ring}
-words         = {name}.words.csv
-dictionary    = {name}.dict.csv
-pretty        = 0
+# generated by tools/make_datasets.py -- edit the generator, not this file
+input               = {frames}
+channels            = {ch}
+window              = {m}
+stride              = {stride}
+components          = {k}
+total_bits          = {tb}
+lambda              = {lam}
+step                = 0.01
+basis_average       = 0.01
+gs_period           = 5
+angle_period        = 10
+theta_threshold_deg = {theta}
+ring_window         = {ring}
+warmup              = {warm}
+out_dir             = {out_dir}
 """
 
 
-def write_all():
-    os.makedirs(OUT, exist_ok=True)
-    index = []
-    for i, spec in enumerate(scenario_specs()):
-        seed = 1000 + i
-        Z, W_of_t, _, curve = build(spec, seed)
-        name = spec["name"]
+def write_frames(path, Z):
+    """One FRAME per line, `channels` numbers per line, space separated.
 
-        with open(os.path.join(OUT, name + ".frames"), "w") as f:
-            f.write("\n".join("%.17g" % v for v in Z.ravel()))
-            f.write("\n")
+    This matches tools/convert.py. The old generator wrote Z.ravel(), one
+    number per line, which happens to be identical for channels = 1 and
+    silently wrong the first time anyone generates a multi-channel set.
 
-        truth = make_truth(spec, Z, W_of_t, curve, seed)
-        with open(os.path.join(OUT, name + ".truth.json"), "w") as f:
-            json.dump(truth, f, indent=1)
+    %.17g is the shortest decimal form that round-trips an IEEE-754 double
+    exactly, so nothing is lost on the way to the C.
+    """
+    with open(path, "w") as f:
+        for row in Z:
+            for i in range(0, len(row), CHANNELS):
+                f.write(" ".join("%.17g" % v for v in row[i : i + CHANNELS]))
+                f.write("\n")
 
-        with open(os.path.join(OUT, name + ".cfg"), "w") as f:
-            f.write(CFG.format(name=name, m=M_TIME, k=K, tb=TOTAL_BITS,
-                               lam=LAMBDA_REG, warm=WARMUP, ring=RING_W))
 
-        seg = truth["segments"]
-        print("%-26s %5d windows  segments %d  first split %s  crossing %s"
-              % (name, spec["n"], len(seg),
-                 seg[0]["best_bits"] if seg else "-",
-                 truth["allocation_crossing_window"]))
-        for s in seg:
-            print("      %5d..%-5d shares %s  best %s"
-                  % (s["start"], s["end"],
-                     [round(x, 4) for x in s["batch_shares"]], s["best_bits"]))
-        index.append(dict(name=name, windows=spec["n"],
-                          events=truth["events"]))
+def make_truth(name, Z, angle_true, ring, theta_deg, seed, note):
+    """Everything a comparison script needs that the C must never be told."""
+    post = Z[WARMUP:]  # the windows that actually get words
+    sh = batch_shares(post)
+    bits, score = best_split(sh.tolist())
+    return dict(
+        name=name,
+        seed=seed,
+        note=note,
+        geometry=dict(
+            m_time=M_TIME,
+            channels=CHANNELS,
+            stride=STRIDE,
+            k=K,
+            total_bits=TOTAL_BITS,
+            lamda=LAMBDA_REG,
+            max_bits=MAX_BITS,
+            warmup=WARMUP,
+            ring_window=ring,
+            n_windows=N_WINDOWS,
+            theta_threshold_deg=theta_deg,
+        ),
+        noise=dict(sigma=SIGMA),
+        batch=dict(
+            shares=sh.tolist(),
+            best_bits=bits,
+            best_score=score,
+            alphabet=[1 << b for b in bits],
+            over_windows=[WARMUP, N_WINDOWS],
+        ),
+        angle_true_rad=angle_true,
+        angle_true_max_deg=float(np.degrees(max(angle_true))),
+    )
 
-    with open(os.path.join(OUT, "index.json"), "w") as f:
-        json.dump(index, f, indent=1)
+
+def write_set(
+    name, Z, angle_true, theta_deg, shares_target, seed, note, frames_name=None
+):
+    """Write one run: frames (unless shared with another run), cfg, truth."""
+    os.makedirs(os.path.join(OUT, "cfg"), exist_ok=True)
+    os.makedirs(os.path.join(OUT, "data"), exist_ok=True)
+    os.makedirs(os.path.join(OUT, "truth"), exist_ok=True)
+
+    frames_name = frames_name or name
+    frames_rel = os.path.join(OUT, "data", frames_name + ".frames")
+    if not os.path.exists(frames_rel):
+        write_frames(frames_rel, Z)
+
+    ring = ring_window_for(shares_target)
+
+    with open(os.path.join(OUT, "cfg", name + ".cfg"), "w") as f:
+        f.write(
+            CFG.format(
+                name=name,
+                frames=frames_rel,
+                ch=CHANNELS,
+                m=M_TIME,
+                stride=STRIDE,
+                k=K,
+                tb=TOTAL_BITS,
+                lam=LAMBDA_REG,
+                theta=theta_deg,
+                ring=ring,
+                warm=WARMUP,
+                out_dir=os.path.join(OUT, "out", name),
+            )
+        )
+
+    truth = make_truth(name, Z, angle_true, ring, theta_deg, seed, note)
+    with open(os.path.join(OUT, "truth", name + ".truth.json"), "w") as f:
+        json.dump(truth, f, indent=1)
+
+    b = truth["batch"]
+    print(
+        "%-24s theta=%2d  ring=%4d  shares %s"
+        % (name, theta_deg, ring, [round(x, 4) for x in b["shares"]])
+    )
+    print(
+        "%-24s           bits %s  alphabet %s  score %.6f"
+        % ("", b["best_bits"], b["alphabet"], b["best_score"])
+    )
+    print("%-24s           true angle max %.3e deg" % ("", truth["angle_true_max_deg"]))
+    return truth
+
+
+PLAN = [
+    (
+        "stationary_theta89",
+        89,
+        "one epoch, the gate never opens. Any disagreement with spartan.py is "
+        "NOT the epoch machinery.",
+    ),
+    (
+        "stationary_theta45",
+        45,
+        "the same bytes as theta89. The difference is the cost of the epoch "
+        "mechanism on data that does not move.",
+    ),
+    (
+        "degenerate_span",
+        45,
+        "equal top shares: the directions wander, the span does not. Every "
+        "epoch here is a false positive.",
+    ),
+]
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument(
+        "--list", action="store_true", help="print the plan and write nothing"
+    )
+    args = ap.parse_args()
+
+    if args.list:
+        print(
+            "m=%d  k=%d  total_bits=%d  stride=%d  windows=%d  sigma=%.2f"
+            % (M_TIME, K, TOTAL_BITS, STRIDE, N_WINDOWS, SIGMA)
+        )
+        print("ring_window (stationary) = %d" % ring_window_for(SHARES_STATIONARY))
+        print("ring_window (degenerate) = %d" % ring_window_for(SHARES_DEGENERATE))
+        print()
+        for name, theta, note in PLAN:
+            print("%-24s theta=%2d  %s" % (name, theta, note))
+        return 0
+
+    Zs, ang_s, _ = build_stationary(seed=1001)
+    write_set(
+        "stationary_theta89",
+        Zs,
+        ang_s,
+        89,
+        SHARES_STATIONARY,
+        1001,
+        PLAN[0][2],
+        frames_name="stationary",
+    )
+    write_set(
+        "stationary_theta45",
+        Zs,
+        ang_s,
+        45,
+        SHARES_STATIONARY,
+        1001,
+        PLAN[1][2],
+        frames_name="stationary",
+    )
+
+    Zd, ang_d, _ = build_degenerate(seed=1002)
+    write_set("degenerate_span", Zd, ang_d, 45, SHARES_DEGENERATE, 1002, PLAN[2][2])
+
+    print("\nwrote %s/{data,cfg,truth}" % OUT)
+    return 0
 
 
 if __name__ == "__main__":
-    if "--list" in sys.argv:
-        for s in scenario_specs():
-            print("%-26s n=%-5d sigma=%.2f  %s"
-                  % (s["name"], s["n"], s["sigma"], s["expect"]["note"]))
-    else:
-        write_all()
+    sys.exit(main())
