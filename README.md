@@ -14,7 +14,6 @@
   <img alt="status"     src="https://img.shields.io/badge/status-research%20prototype-39FF14?style=flat-square&labelColor=0D1117">
 </p>
 
-SPARTAN turns a time series into a short word by projecting it onto its principal components
 
 **A symbolic representation for unbounded time-series streams, whose distance stays a
 valid lower bound while the subspace underneath it moves.**
@@ -121,8 +120,8 @@ position already holds, the less it is willing to pay for another. Positions bid
 highest bid takes the next bit, and every bid falls as its owner accumulates.
 
 This framing is not decoration. It gives a cheap online test for whether the current
-split has gone stale: compute the best bid still outstanding, the largest gain from
-granting one more bit and the best ask which refers to the smallest loss from taking one away. A
+split has gone stale: compute the best bid still outstanding — the largest gain from
+granting one more bit — and the best ask — the smallest loss from taking one away. A
 positive spread means a profitable trade exists and the allocation no longer fits the
 data. The spread is reported every window and costs a handful of operations.
 
@@ -157,11 +156,11 @@ and how much of the observed displacement was the estimator rather than the data
 
 ### Three bases, one job each
 
-- **live** the raw Oja iterate. Trembles. Watched as an early warning that the step is
+- **live** — the raw Oja iterate. Trembles. Watched as an early warning that the step is
   too large.
-- **averaged** the smoothed copy. Where the data is *now*. Everything measures against
+- **averaged** — the smoothed copy. Where the data is *now*. Everything measures against
   it.
-- **frozen** writes the letters. Never moves within an epoch, which is what makes the
+- **frozen** — writes the letters. Never moves within an epoch, which is what makes the
   words of an epoch mutually comparable.
 
 A fourth, the **candidate**, exists only while a replacement is being prepared. It is a
