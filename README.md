@@ -121,8 +121,8 @@ position already holds, the less it is willing to pay for another. Positions bid
 highest bid takes the next bit, and every bid falls as its owner accumulates.
 
 This framing is not decoration. It gives a cheap online test for whether the current
-split has gone stale: compute the best bid still outstanding — the largest gain from
-granting one more bit — and the best ask — the smallest loss from taking one away. A
+split has gone stale: compute the best bid still outstanding, the largest gain from
+granting one more bit and the best ask which refers to the smallest loss from taking one away. A
 positive spread means a profitable trade exists and the allocation no longer fits the
 data. The spread is reported every window and costs a handful of operations.
 
