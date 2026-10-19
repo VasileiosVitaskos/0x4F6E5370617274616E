@@ -14,7 +14,7 @@
   <img alt="status"     src="https://img.shields.io/badge/status-research%20prototype-39FF14?style=flat-square&labelColor=0D1117">
 </p>
 
-SPARTAN turns a time series into a short word by projecting it onto its principal
+SPARTAN turns a time series into a short word by projecting it onto its principal components
 
 **A symbolic representation for unbounded time-series streams, whose distance stays a
 valid lower bound while the subspace underneath it moves.**
