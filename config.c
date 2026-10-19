@@ -68,7 +68,7 @@ void config_defaults(Config* cfg, RunOptions* run) {
   *cfg = config_default_mv(3, 1, 8);
   copy_path(run->input, "builtin");
   copy_path(run->words_out, "-");
-  copy_path(run->dict_out, "");
+  copy_path(run->out_dir, "");
   run->pretty = 0;
 }
 
@@ -181,8 +181,17 @@ int config_load(const char* path, Config* cfg, RunOptions* run) {
       copy_path(run->input, val);
     } else if (strcmp(key, "words") == 0) {
       copy_path(run->words_out, val);
+    } else if (strcmp(key, "out_dir") == 0) {
+      copy_path(run->out_dir, val);
     } else if (strcmp(key, "dictionary") == 0) {
-      copy_path(run->dict_out, val);
+      fprintf(stderr,
+              "config: line %d, 'dictionary' no longer exists. A run now "
+              "writes one dictionary and one basis per epoch, plus an index, "
+              "so a single file name cannot hold them. Use 'out_dir', the "
+              "folder they all go in. The folder must already exist.\n",
+              lineno);
+      rc = -1;
+      break;
     } else if (strcmp(key, "pretty") == 0) {
       if (parse_long(val, &iv) != 0 || iv < INT_MIN || iv > INT_MAX)
         goto bad_value;
@@ -308,7 +317,7 @@ void config_dump(FILE* f, const Config* cfg, const RunOptions* run) {
   fprintf(f, "angle_period  = %d\n", cfg->angle_period);
   fprintf(f, "warmup        = %d\n", cfg->warmup);
   fprintf(f, "words         = %s\n", run->words_out);
-  fprintf(f, "dictionary    = %s\n", run->dict_out[0] ? run->dict_out : "");
+  fprintf(f, "out_dir       = %s\n", run->out_dir);
   fprintf(f, "pretty        = %d\n", run->pretty);
   fprintf(f, "ring_window   = %d\n", cfg->ring_w);
   /* The block is self delimiting: the header above and this line below bracket

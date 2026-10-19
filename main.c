@@ -63,30 +63,27 @@ static double now_seconds(void) {
 
 // Open a destination file, or hand back stdout for "-"; the flag tells the
 // caller whether it owns the handle and must close it
-static FILE *open_sink(const char *path, int *owned) {
+static FILE* open_sink(const char* path, int* owned) {
   *owned = 0;
-  if (strcmp(path, "-") == 0)
-    return stdout;
-  FILE *f = fopen(path, "w");
-  if (f)
-    *owned = 1;
+  if (strcmp(path, "-") == 0) return stdout;
+  FILE* f = fopen(path, "w");
+  if (f) *owned = 1;
   return f;
 }
 
 // Persist the frozen dictionary as data; an analysis script needs exactly this
 // to recompute distances without re-running the C
-static int write_dictionary(const char *path, const Config *cfg,
-                            const double *ev, const int *bits,
-                            const int *alphabet, const double *bkpt) {
-  FILE *f = fopen(path, "w");
+static int write_dictionary(const char* path, const Config* cfg,
+                            const double* ev, const int* bits,
+                            const int* alphabet, const double* bkpt) {
+  FILE* f = fopen(path, "w");
   if (!f) {
     fprintf(stderr, "Error: Cannot write dictionary to '%s'\n", path);
     return -1;
   }
 
   fprintf(f, "pos,alphabet,bits,ev");
-  for (int b = 0; b < MAX_ALPHABET; b++)
-    fprintf(f, ",bkpt%d", b);
+  for (int b = 0; b < MAX_ALPHABET; b++) fprintf(f, ",bkpt%d", b);
   fprintf(f, "\n");
 
   for (int j = 0; j < cfg->k; j++) {
@@ -94,9 +91,9 @@ static int write_dictionary(const char *path, const Config *cfg,
     for (int b = 0; b < MAX_ALPHABET; b++) {
       double v = bkpt[j * MAX_ALPHABET + b];
       if (b >= alphabet[j])
-        fprintf(f, ","); // slot unused at this position
+        fprintf(f, ",");  // slot unused at this position
       else if (v == DBL_MAX)
-        fprintf(f, ",inf"); // the wall the symbol search always stops at
+        fprintf(f, ",inf");  // the wall the symbol search always stops at
       else
         fprintf(f, ",%.17g", v);
     }
@@ -107,6 +104,46 @@ static int write_dictionary(const char *path, const Config *cfg,
   return 0;
 }
 
+static int epoch_path(char* buf, size_t cap, const char* dir, const char* what,
+                      long n) {
+  int len = snprintf(buf, cap, "%s/%s_%ld.csv", dir, what, n);
+  if (len < 0 || (size_t)len >= cap) {
+    fprintf(stderr, "Error: path truncated or invalid for directory '%s'\n",
+            dir);
+    return -1;
+  }
+  return 0;
+}
+
+/* Writes one basis to a CSV file: one row per direction, m numbers each.
+ * Returns 0 on success, -1 if the file could not be opened.
+ */
+static int write_basis(const char* path, const OjaPCA* p) {
+  FILE* f = fopen(path, "w");
+  if (!f) {
+    fprintf(stderr, "Error: Cannot write basis to '%s'\n", path);
+    return -1;
+  }
+
+  // Header line: dir,v0,v1,...,v(m-1)
+  fprintf(f, "dir");
+  for (int i = 0; i < p->m; i++) {
+    fprintf(f, ",v%d", i);
+  }
+  fprintf(f, "\n");
+
+  // One row per direction: j,v[j*m+0],v[j*m+1],...
+  for (int j = 0; j < p->k; j++) {
+    fprintf(f, "%d", j);
+    for (int i = 0; i < p->m; i++) {
+      fprintf(f, ",%.17g", p->v[j * p->m + i]);
+    }
+    fprintf(f, "\n");
+  }
+
+  fclose(f);
+  return 0;
+}
 /*
  * Builds a dictionary from a block of projections: importances, bit split,
  * alphabet sizes and cut points.
@@ -150,10 +187,9 @@ static int write_dictionary(const char *path, const Config *cfg,
  *   a variance and a sorted quantile, so a ring buffer may be passed straight
  *   in even though its rows are not in time order.
  */
-static int build_dictionary(const Config *cfg, double *proj, int n_proj,
-                            const char *why, int *perm, double *ev, int *bits,
-                            int *alphabet, double *bkpt, double *score) {
-
+static int build_dictionary(const Config* cfg, double* proj, int n_proj,
+                            const char* why, int* perm, double* ev, int* bits,
+                            int* alphabet, double* bkpt, double* score) {
   estimate_eigenvalues(proj, n_proj, cfg->k, ev);
 
   for (int i = 0; i < cfg->k; i++) {
@@ -193,7 +229,6 @@ static int build_dictionary(const Config *cfg, double *proj, int n_proj,
     // 2. Reorder proj columns (ανά γραμμή r)
     double tmp_row[cfg->k];
     for (int r = 0; r < n_proj; r++) {
-
       // Gather: διαβάζουμε τις παλιές στήλες perm[i] στη νέα θέση i
       for (int i = 0; i < cfg->k; i++) {
         tmp_row[i] = proj[r * cfg->k + perm[i]];
@@ -212,8 +247,7 @@ static int build_dictionary(const Config *cfg, double *proj, int n_proj,
                    &local_score) != 0) {
     return -1;
   }
-  if (score)
-    *score = local_score;
+  if (score) *score = local_score;
   // Step 3: clamp to what digitize can represent, and note the widest
   // alphabet, since that is the one that needs the most rows to resolve
   int max_a = 0;
@@ -241,19 +275,16 @@ static int build_dictionary(const Config *cfg, double *proj, int n_proj,
   compute_breakpoints(proj, n_proj, cfg->k, alphabet, bkpt);
   // Step 6: one log line, so both paths report identically
   fprintf(stderr, "ev       =");
-  for (int j = 0; j < cfg->k; j++)
-    fprintf(stderr, " %.4f", ev[j]);
+  for (int j = 0; j < cfg->k; j++) fprintf(stderr, " %.4f", ev[j]);
   fprintf(stderr, "\nbits     =");
-  for (int j = 0; j < cfg->k; j++)
-    fprintf(stderr, " %d", bits[j]);
+  for (int j = 0; j < cfg->k; j++) fprintf(stderr, " %d", bits[j]);
   fprintf(stderr, "\nalphabet =");
-  for (int j = 0; j < cfg->k; j++)
-    fprintf(stderr, " %d", alphabet[j]);
+  for (int j = 0; j < cfg->k; j++) fprintf(stderr, " %d", alphabet[j]);
   fprintf(stderr, "\nscore    = %.6f\n", local_score);
   return 0;
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   Config cfg;
   RunOptions run;
 
@@ -263,8 +294,7 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
   }
   if (argc == 2) {
-    if (config_load(argv[1], &cfg, &run) != 0)
-      return EXIT_FAILURE;
+    if (config_load(argv[1], &cfg, &run) != 0) return EXIT_FAILURE;
   } else {
     config_defaults(&cfg, &run);
   }
@@ -275,22 +305,23 @@ int main(int argc, char *argv[]) {
 
   // Default exit code and safe initialization of pointers and state
   int rc = EXIT_FAILURE;
-  double *demo_flat = NULL;
-  double *win = NULL;
-  double *xc = NULL;
-  double *y = NULL;
-  double *y_cand = NULL;
-  int *word = NULL;
-  double *bkpt = NULL;
-  double *warmup_proj = NULL;
-  double *ev = NULL;
-  int *bits = NULL;
-  int *alphabet_arr = NULL;
-  double *ev_live = NULL;
-  double *angles_scratch = NULL;
-  double *angles = NULL;
-  int *perm = NULL;
-  FILE *out = NULL;
+  double* demo_flat = NULL;
+  double* win = NULL;
+  double* xc = NULL;
+  double* y = NULL;
+  double* y_cand = NULL;
+  int* word = NULL;
+  double* bkpt = NULL;
+  double* warmup_proj = NULL;
+  double* ev = NULL;
+  int* bits = NULL;
+  int* alphabet_arr = NULL;
+  double* ev_live = NULL;
+  double* angles_scratch = NULL;
+  double* angles = NULL;
+  int* perm = NULL;
+  FILE* out = NULL;
+  FILE* epochs_f = NULL;
   int out_owned = 0;
 
   RunningMean my_stats = {0};
@@ -299,7 +330,7 @@ int main(int argc, char *argv[]) {
   OjaPCA oja_frozen = {0};
   OjaPCA oja_cand = {0};
 
-  const OjaPCA *symbol_basis = &oja_avg;
+  const OjaPCA* symbol_basis = &oja_avg;
   WindowStream stream = {0};
   ProjRing ring = {0};
   ProjRing cand_ring = {0};
@@ -350,8 +381,7 @@ int main(int argc, char *argv[]) {
   perm = calloc((size_t)cfg.k, sizeof(int));
   alphabet_arr = calloc((size_t)cfg.k, sizeof(int));
   ev_live = calloc((size_t)cfg.k, sizeof(double));
-  if (use_demo)
-    demo_flat = calloc(DEMO_LEN, sizeof(double));
+  if (use_demo) demo_flat = calloc(DEMO_LEN, sizeof(double));
 
   if (!win || !xc || !y || !y_cand || !word || !bkpt || !warmup_proj || !ev ||
       !bits || !ev_live || !alphabet_arr || !angles_scratch || !angles ||
@@ -367,8 +397,9 @@ int main(int argc, char *argv[]) {
   }
 
   if (oja_init(&oja_live, cfg.k, cfg.m) != 0) {
-    fprintf(stderr, "Error: oja_init failed, components must not exceed "
-                    "channels * window\n");
+    fprintf(stderr,
+            "Error: oja_init failed, components must not exceed "
+            "channels * window\n");
     goto cleanup;
   }
 
@@ -423,18 +454,33 @@ int main(int argc, char *argv[]) {
   }
 
   fprintf(out, "window");
-  for (int j = 0; j < cfg.k; j++)
-    fprintf(out, ",sym%d", j);
+  for (int j = 0; j < cfg.k; j++) fprintf(out, ",sym%d", j);
   fprintf(out, "\n");
-
+  // The epoch index, one line per epoch. Opened with "w" so every run starts
+  // a clean file
+  if (run.out_dir[0]) {
+    char idx_path[512];
+    int len =
+        snprintf(idx_path, sizeof(idx_path), "%s/epochs.csv", run.out_dir);
+    if (len < 0 || (size_t)len >= sizeof(idx_path)) {
+      fprintf(stderr, "Error: path truncated for '%s/epochs.csv'\n",
+              run.out_dir);
+      goto cleanup;
+    }
+    epochs_f = fopen(idx_path, "w");
+    if (!epochs_f) {
+      fprintf(stderr, "Error: Cannot write epoch index to '%s'\n", idx_path);
+      goto cleanup;
+    }
+    fprintf(epochs_f, "epoch,first_window,theta_cut_rad,staleness_rad,score\n");
+  }
   // Main stream processing loop; reading and computing are timed separately
   // so a slow text parser can never be mistaken for a slow algorithm
   for (;;) {
     double t0 = now_seconds();
     int got = stream_next(&stream, win);
     t_io += now_seconds() - t0;
-    if (!got)
-      break;
+    if (!got) break;
 
     t0 = now_seconds();
     n_seen++;
@@ -466,10 +512,8 @@ int main(int argc, char *argv[]) {
     if (n_seen % cfg.gs_period == 0) {
       double d_err, l_err;
       oja_orthonormality_error(&oja_live, &d_err, &l_err);
-      if (d_err > worst_dot_seen)
-        worst_dot_seen = d_err;
-      if (l_err > worst_len_seen)
-        worst_len_seen = l_err;
+      if (d_err > worst_dot_seen) worst_dot_seen = d_err;
+      if (l_err > worst_len_seen) worst_len_seen = l_err;
 
       /* The guarantee is stated about the basis that WRITES, and that is now
          the smoothed one, so its drift is the number with meaning. The raw
@@ -477,10 +521,8 @@ int main(int argc, char *argv[]) {
        */
       double da_err, la_err;
       oja_orthonormality_error(&oja_avg, &da_err, &la_err);
-      if (da_err > worst_dot_avg)
-        worst_dot_avg = da_err;
-      if (la_err > worst_len_avg)
-        worst_len_avg = la_err;
+      if (da_err > worst_dot_avg) worst_dot_avg = da_err;
+      if (la_err > worst_len_avg) worst_len_avg = la_err;
 
       gram_schmidt(&oja_live);
       /* The average of unit vectors is not a unit vector and the average of
@@ -521,8 +563,7 @@ int main(int argc, char *argv[]) {
                   (1.0 - RATE_BLEND) * theta_rate + RATE_BLEND * sample;
             }
 
-            if (theta_rate > worst_rate)
-              worst_rate = theta_rate;
+            if (theta_rate > worst_rate) worst_rate = theta_rate;
           }
           theta_prev = theta_max;
           theta_prev_at = n_seen;
@@ -581,8 +622,7 @@ int main(int argc, char *argv[]) {
           if (theta_max > cfg.theta_threshold) {
             if (was_below) {
               double over = theta_max - cfg.theta_threshold;
-              if (over > worst_over)
-                worst_over = over;
+              if (over > worst_over) worst_over = over;
             }
             was_below = 0;
 
@@ -592,13 +632,13 @@ int main(int argc, char *argv[]) {
               quiet_until = n_seen + cfg.warmup;
             }
             if (staging && cand_ready) {
-              /* TODO 1: Χτίσιμο νέου λεξικού από το cand_ring */
               double new_score = 0.0;
               if (build_dictionary(&cfg, cand_ring.buf, cand_ring.count,
                                    "rebasis", perm, ev, bits, alphabet_arr,
                                    bkpt, &new_score) != 0) {
-                fprintf(stderr, "Error: could not build candidate dictionary "
-                                "at re-basing\n");
+                fprintf(stderr,
+                        "Error: could not build candidate dictionary "
+                        "at re-basing\n");
                 t_algo += now_seconds() - t0;
                 goto cleanup;
               }
@@ -629,10 +669,7 @@ int main(int argc, char *argv[]) {
                         stale_rc, n_seen - 1);
                 staleness = 0.0;
               }
-              if (staleness > worst_stale)
-                worst_stale = staleness;
-
-              /* TODO 2: Η υποψήφια βάση παίρνει τη θέση της oja_frozen */
+              if (staleness > worst_stale) worst_stale = staleness;
               int frz_rc = oja_copy_from(&oja_frozen, &oja_cand);
               if (frz_rc != 0) {
                 fprintf(
@@ -652,25 +689,38 @@ int main(int argc, char *argv[]) {
                 goto cleanup;
               }
 
-              /* TODO 3: Καθαρισμός του κύριου ring */
               pring_reset(&ring);
 
-              /* TODO 4: Καθαρισμός κατάστασης staging και re-seed του angle
-               * rate */
               staging = 0;
               cand_ready = 0;
               theta_prev_at = -1;
 
-              /* TODO 5: Αύξηση εποχής και καταγραφή στο stderr */
               n_epochs++;
+              if (run.out_dir[0]) {
+                char path[512];
+                if (epoch_path(path, sizeof(path), run.out_dir, "dict",
+                               n_epochs) != 0 ||
+                    write_dictionary(path, &cfg, ev, bits, alphabet_arr,
+                                     bkpt) != 0) {
+                  t_algo += now_seconds() - t0;
+                  goto cleanup;
+                }
+                if (epoch_path(path, sizeof(path), run.out_dir, "basis",
+                               n_epochs) != 0 ||
+                    write_basis(path, &oja_frozen) != 0) {
+                  t_algo += now_seconds() - t0;
+                  goto cleanup;
+                }
+                fprintf(epochs_f, "%ld,%ld,%.9f,%.9f,%.6f\n", n_epochs,
+                        n_seen - 1, theta_max, staleness, new_score);
+              }
               fprintf(stderr, "rebasis,%ld,%.9f,%.9f,%.6f\n", n_seen - 1,
                       theta_max, staleness, new_score);
 
               /* TODO 6: Επαναφορά της καθυστέρησης */
               if (late_since >= 0) {
                 long late = n_seen - late_since;
-                if (late > worst_late)
-                  worst_late = late;
+                if (late > worst_late) worst_late = late;
               }
               late_since = -1;
 
@@ -687,8 +737,7 @@ int main(int argc, char *argv[]) {
             late_since = -1;
           }
           fprintf(stderr, "angle,%ld,%.9f", n_seen - 1, theta_max);
-          for (int j = 0; j < cfg.k; j++)
-            fprintf(stderr, ",%.9f", angles[j]);
+          for (int j = 0; j < cfg.k; j++) fprintf(stderr, ",%.9f", angles[j]);
           fprintf(stderr, ",%.9f,%.9f\n", theta_noise, theta_rate);
         }
       }
@@ -717,19 +766,13 @@ int main(int argc, char *argv[]) {
       warm_count++;
 
       if (warm_count == cfg.warmup) {
+        double warm_score = 0.0;
         if (build_dictionary(&cfg, warmup_proj, warm_count, "warmup", perm, ev,
-                             bits, alphabet_arr, bkpt, NULL) != 0) {
+                             bits, alphabet_arr, bkpt, &warm_score) != 0) {
           fprintf(stderr, "Error: Could not build dictionary\n");
           t_algo += now_seconds() - t0;
           goto cleanup;
         }
-        // Persist the frozen dictionary for downstream analysis
-        if (run.dict_out[0] && write_dictionary(run.dict_out, &cfg, ev, bits,
-                                                alphabet_arr, bkpt) != 0) {
-          t_algo += now_seconds() - t0;
-          goto cleanup;
-        }
-
         gram_schmidt(&oja_live);
         gram_schmidt(&oja_avg);
 
@@ -748,6 +791,23 @@ int main(int argc, char *argv[]) {
           t_algo += now_seconds() - t0;
           goto cleanup;
         }
+        if (run.out_dir[0]) {
+          char path[512];
+          if (epoch_path(path, sizeof(path), run.out_dir, "dict", n_epochs) !=
+                  0 ||
+              write_dictionary(path, &cfg, ev, bits, alphabet_arr, bkpt) != 0) {
+            t_algo += now_seconds() - t0;
+            goto cleanup;
+          }
+          if (epoch_path(path, sizeof(path), run.out_dir, "basis", n_epochs) !=
+                  0 ||
+              write_basis(path, &oja_frozen) != 0) {
+            t_algo += now_seconds() - t0;
+            goto cleanup;
+          }
+          fprintf(epochs_f, "%ld,%ld,%.9f,%.9f,%.6f\n", n_epochs, n_seen, 0.0,
+                  0.0, warm_score);
+        }
         pring_reset(&ring);
         have_bkpt = 1;
         free(warmup_proj);
@@ -761,8 +821,7 @@ int main(int argc, char *argv[]) {
     digitize(y, bkpt, cfg.k, alphabet_arr, word);
     n_words++;
 
-    if (n_seen % cfg.ring_w == 0)
-      pring_refresh(&ring);
+    if (n_seen % cfg.ring_w == 0) pring_refresh(&ring);
 
     if (ring.count == ring.cap) {
       pring_importances(&ring, ev_live);
@@ -839,8 +898,8 @@ int main(int argc, char *argv[]) {
   rc = EXIT_SUCCESS;
 
 cleanup:
-  if (out && out_owned)
-    fclose(out);
+  if (out && out_owned) fclose(out);
+  if (epochs_f) fclose(epochs_f);
   free(demo_flat);
   free(win);
   free(xc);
