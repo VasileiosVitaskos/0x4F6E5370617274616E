@@ -157,11 +157,11 @@ and how much of the observed displacement was the estimator rather than the data
 
 ### Three bases, one job each
 
-- **live** — the raw Oja iterate. Trembles. Watched as an early warning that the step is
+- **live** the raw Oja iterate. Trembles. Watched as an early warning that the step is
   too large.
-- **averaged** — the smoothed copy. Where the data is *now*. Everything measures against
+- **averaged** the smoothed copy. Where the data is *now*. Everything measures against
   it.
-- **frozen** — writes the letters. Never moves within an epoch, which is what makes the
+- **frozen** writes the letters. Never moves within an epoch, which is what makes the
   words of an epoch mutually comparable.
 
 A fourth, the **candidate**, exists only while a replacement is being prepared. It is a
