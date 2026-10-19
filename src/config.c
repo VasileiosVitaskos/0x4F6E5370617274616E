@@ -27,7 +27,9 @@
 static char* trim(char* s) {
   while (*s && isspace((unsigned char)*s)) s++;
   char* e = s + strlen(s);
-  while (e > s && isspace((unsigned char)e[-1])) e--;
+  while (e > s && isspace((unsigned char)e[-1]))
+    e--;  // Walk tail pointer backward via negative index e[-1] to strip
+          // trailing whitespace in-place
   *e = '\0';
   return s;
 }
@@ -37,7 +39,9 @@ static char* trim(char* s) {
 static int parse_long(const char* text, long* out) {
   errno = 0;
   char* end;
-  long v = strtol(text, &end, 10);
+  long v = strtol(text, &end,
+                  10);  // Capture first unparsed character address in end to
+                        // detect empty strings or trailing non-numeric junk
   if (end == text) return -1;
   while (*end && isspace((unsigned char)*end)) end++;
   if (*end != '\0') return -1;
@@ -140,9 +144,6 @@ static int validate(const Config* c) {
 
 int config_load(const char* path, Config* cfg, RunOptions* run) {
   config_defaults(cfg, run);
-
-  /* Settings whose default depends on another one. Left UNSET until the whole
-     file has been read, so the order of lines cannot change the outcome. */
   long stride = UNSET, total_bits = UNSET;
 
   FILE* f = fopen(path, "r");
@@ -170,7 +171,8 @@ int config_load(const char* path, Config* cfg, RunOptions* run) {
       rc = -1;
       break;
     }
-    *eq = '\0';
+    *eq = '\0';  // Split line buffer in-place at '=' so body points to the key
+                 // and eq + 1 points to the value
     char* key = trim(body);
     char* val = trim(eq + 1);
 
@@ -270,27 +272,14 @@ int config_load(const char* path, Config* cfg, RunOptions* run) {
   fclose(f);
   if (rc != 0) return rc;
 
-  /* m is derived, never given directly. */
+  // m is derived, never given directly.
   cfg->m = cfg->d * cfg->m_time;
 
-  /* And so is the Oja step. After the per window z-norm every window has
-     length exactly sqrt(m), so the projections grow with m and the step the
-     rule actually takes is step * m, not step. Dividing here is what makes one
-     setting mean the same thing at every window size.
-
-     IT IS NO ACCIDENT that the old fixed learning_rate = 0.01 looked fine for
-     so long: the built-in demo has window = 8, where it works out to an
-     effective step of 0.08, the quiet end of the range. At window 32 the same
-     number means 0.32, at window 128 it means 1.28, which is far past where
-     the directions stop settling at all. The demo was the one size that
-     flattered it, and every measurement taken there was the easiest case we
-     own. Measured subspace error at window 16 / 32 / 64 / 128 with the old
-     fixed step: 0.135, 0.241, 0.440, 1.136. With step / m and the averaged
-     basis: 0.089, 0.108, 0.161, 0.219. */
-  cfg->lr = cfg->step / cfg->m;
+  cfg->lr =
+      cfg->step /
+      cfg->m;  // Scale step by window length m because z-normalized windows
+               // have norm sqrt(m), making raw projections scale with m
   cfg->theta_threshold = cfg->theta_threshold_deg * SPARTAN_DEG_TO_RAD;
-
-  /* Now the dependent defaults, once everything else is known. */
   cfg->stride = (stride == UNSET) ? cfg->m_time : (int)stride;
   cfg->total_bits = (total_bits == UNSET) ? 2 * cfg->k : (int)total_bits;
 
@@ -320,8 +309,5 @@ void config_dump(FILE* f, const Config* cfg, const RunOptions* run) {
   fprintf(f, "out_dir       = %s\n", run->out_dir);
   fprintf(f, "pretty        = %d\n", run->pretty);
   fprintf(f, "ring_window   = %d\n", cfg->ring_w);
-  /* The block is self delimiting: the header above and this line below bracket
-   it, so a log can be sliced back into a settings file without guessing
-   which lines belong. Both are comments, so the slice is valid as it stands */
   fprintf(f, "# end of settings\n");
 }

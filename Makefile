@@ -73,8 +73,15 @@ golden: $(BIN)/spartan_toy_dbg
 	@echo "golden updated, read it before you commit it:"
 	@cat $(TDIR)/expected/summary.txt
 
+verify: $(BIN)/spartan_toy_dbg
+	@mkdir -p $(TDIR)/out/epochs
+	@printf 'out_dir = $(TDIR)/out/epochs\n' > $(TDIR)/out/verify.cfg
+	@./$(BIN)/spartan_toy_dbg $(TDIR)/out/verify.cfg \
+	    > $(TDIR)/out/words.csv 2> $(TDIR)/out/verify.log
+	@python3 tools/verify_words.py $(TDIR)/out/epochs $(TDIR)/out/words.csv
+
 clean:
 	rm -rf $(BIN)
 	rm -rf tests/*/out
 
-.PHONY: all debug unit check golden clean
+.PHONY: all debug unit check golden verify clean

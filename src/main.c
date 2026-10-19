@@ -89,7 +89,9 @@ static int write_dictionary(const char* path, const Config* cfg,
   for (int j = 0; j < cfg->k; j++) {
     fprintf(f, "%d,%d,%d,%.17g", j, alphabet[j], bits[j], ev[j]);
     for (int b = 0; b < MAX_ALPHABET; b++) {
-      double v = bkpt[j * MAX_ALPHABET + b];
+      double v =
+          bkpt[j * MAX_ALPHABET + b];  // Index flat breakpoint table using
+                                       // fixed MAX_ALPHABET row stride
       if (b >= alphabet[j])
         fprintf(f, ",");  // slot unused at this position
       else if (v == DBL_MAX)
@@ -144,49 +146,7 @@ static int write_basis(const char* path, const OjaPCA* p) {
   fclose(f);
   return 0;
 }
-/*
- * Builds a dictionary from a block of projections: importances, bit split,
- * alphabet sizes and cut points.
- *
- * Called twice: once when the warm-up ends, and once at every re-basing. The
- * two paths must produce a dictionary the same way or they will drift apart,
- * which is the whole reason this is a function and not two copies.
- *
- * cfg       settings in force
- * proj      n_proj rows of k numbers, flat, row r position j at proj[r*k + j].
- *           MODIFIED: its columns come back reordered to match perm. Both
- *           callers drop this buffer right after, so nothing reads the old
- *           order, but do not pass one you still need
- * n_proj    how many rows are valid                          [windows]
- * why       short label for the log line, e.g. "warmup" or "rebasis"
- * perm      out, k entries; perm[i] is the OLD position now sitting at NEW
- *           position i. The caller MUST apply the same perm to the rows of
- *           the basis snapshot, or the dictionary and the basis disagree
- * ev        out, k importances as shares, they sum to 1
- * bits      out, k bit counts, they sum to cfg->total_bits
- * alphabet  out, k alphabet sizes, each 1 << bits[j]
- * bkpt      out, k rows of MAX_ALPHABET cut points, flat
- * score     out, the objective the chosen split reaches, or NULL. Describes
- *           the split BEFORE the MAX_BITS clamp, so if a clamp fired the real
- *           allocation is worse than this number says
- *
- * Returns 0 on success, -1 if the split could not be solved.
- *
- * Edge cases:
- *   n_proj < 10 * largest alphan_proj rows of k numbers, flat; row r position j
- * at proj[r*k + j]. MODIFIED: its columns come back reordered to match perm.
- * Both callers drop this buffer right after, so nothing reads the old order,
- * but do not pass one you still needbet  -> cut points are noise, warned not
- * refused a position may receive zero bits -> alphabet 1, one cut point, letter
- *                                       always 0, which is intended
- *   ROW ORDER DOES NOT MATTER.
- *   The DP at spartan.c:611 forbids a position from taking more bits than
- *   the one before it, which is a theorem only when ev is descending. Oja
- *   does not deliver its directions in that order, so this sorts them.
- *   Both consumers compute per column statistics,
- *   a variance and a sorted quantile, so a ring buffer may be passed straight
- *   in even though its rows are not in time order.
- */
+
 static int build_dictionary(const Config* cfg, double* proj, int n_proj,
                             const char* why, int* perm, double* ev, int* bits,
                             int* alphabet, double* bkpt, double* score) {
@@ -199,7 +159,10 @@ static int build_dictionary(const Config* cfg, double* proj, int n_proj,
   for (int i = 0; i < cfg->k - 1; i++) {
     int max_idx = i;
     for (int j = i + 1; j < cfg->k; j++) {
-      if (ev[perm[j]] > ev[perm[max_idx]]) {
+      if (ev[perm[j]] >
+          ev[perm[max_idx]]) {  // Indirect selection sort on index array perm
+                                // to rank eigenvalues descending without
+                                // mutating ev yet
         max_idx = j;
       }
     }
@@ -226,14 +189,14 @@ static int build_dictionary(const Config* cfg, double* proj, int n_proj,
     for (int i = 0; i < cfg->k; i++) {
       ev[i] = tmp_ev[i];
     }
-    // 2. Reorder proj columns (ανά γραμμή r)
     double tmp_row[cfg->k];
     for (int r = 0; r < n_proj; r++) {
-      // Gather: διαβάζουμε τις παλιές στήλες perm[i] στη νέα θέση i
       for (int i = 0; i < cfg->k; i++) {
-        tmp_row[i] = proj[r * cfg->k + perm[i]];
+        tmp_row[i] =
+            proj[r * cfg->k +
+                 perm[i]];  // Gather column perm[i] into slot i via temporary
+                            // row buffer to avoid overwriting unvisited columns
       }
-      // Γράφουμε πίσω στην ίδια γραμμή r
       for (int i = 0; i < cfg->k; i++) {
         proj[r * cfg->k + i] = tmp_row[i];
       }
@@ -330,7 +293,9 @@ int main(int argc, char* argv[]) {
   OjaPCA oja_frozen = {0};
   OjaPCA oja_cand = {0};
 
-  const OjaPCA* symbol_basis = &oja_avg;
+  const OjaPCA* symbol_basis =
+      &oja_avg;  // Read-only alias pointing to the active projection basis it
+                 // switches from oja_avg to oja_frozen after warmup
   WindowStream stream = {0};
   ProjRing ring = {0};
   ProjRing cand_ring = {0};
@@ -376,7 +341,10 @@ int main(int argc, char* argv[]) {
   warmup_proj = calloc((size_t)cfg.warmup * cfg.k, sizeof(double));
   ev = calloc((size_t)cfg.k, sizeof(double));
   bits = calloc((size_t)cfg.k, sizeof(int));
-  angles_scratch = calloc((size_t)cfg.k * (size_t)(cfg.k + 1), sizeof(double));
+  angles_scratch = calloc(
+      (size_t)cfg.k * (size_t)(cfg.k + 1),
+      sizeof(double));  // Pre-allocate k*k cross-Gram matrix plus k singular
+                        // values in one contiguous block for subspace_angles
   angles = calloc((size_t)cfg.k, sizeof(double));
   perm = calloc((size_t)cfg.k, sizeof(int));
   alphabet_arr = calloc((size_t)cfg.k, sizeof(int));
@@ -431,7 +399,10 @@ int main(int argc, char* argv[]) {
   if (use_demo) {
     const size_t block = DEMO_ROWS * DEMO_COLS;
     for (int rep = 0; rep < DEMO_REPEATS; rep++) {
-      memcpy(demo_flat + rep * block, demo_rows, block * sizeof(double));
+      memcpy(demo_flat + rep * block, demo_rows,
+             block * sizeof(double));  // Tile static 2D demo_rows array into
+                                       // flat contiguous heap buffer via
+                                       // pointer offset rep * block
     }
     if (stream_init_array(&stream, demo_flat, DEMO_LEN, cfg.d, cfg.m_time,
                           cfg.stride) != 0) {
@@ -487,7 +458,9 @@ int main(int argc, char* argv[]) {
 
     // Channel-wise z-score normalization
     for (int c = 0; c < cfg.d; c++) {
-      znorm_row(&win[c * cfg.m_time], cfg.m_time);
+      znorm_row(&win[c * cfg.m_time],
+                cfg.m_time);  // Normalize each contiguous m_time channel slice
+                              // independently inside the Mode-1 unfolded window
     }
 
     // Center window by removing the running streaming mean
@@ -635,7 +608,10 @@ int main(int argc, char* argv[]) {
               double new_score = 0.0;
               if (build_dictionary(&cfg, cand_ring.buf, cand_ring.count,
                                    "rebasis", perm, ev, bits, alphabet_arr,
-                                   bkpt, &new_score) != 0) {
+                                   bkpt, &new_score) !=
+                  0)  // Pass flat ring buffer directly, column variance and
+                      // quantiles are invariant to circular row order
+              {
                 fprintf(stderr,
                         "Error: could not build candidate dictionary "
                         "at re-basing\n");
@@ -683,7 +659,10 @@ int main(int argc, char* argv[]) {
               // The dictionary is in sorted position order now, so the basis
               // that writes has to agree. Letter j and cut point row j must
               // describe the same direction
-              if (oja_permute_rows(&oja_frozen, perm) != 0) {
+              if (oja_permute_rows(&oja_frozen, perm) !=
+                  0)  // Permute frozen basis rows to match the sorted
+                      // dictionary column order produced by build_dictionary
+              {
                 fprintf(stderr, "Error: could not reorder the frozen basis\n");
                 t_algo += now_seconds() - t0;
                 goto cleanup;
@@ -717,7 +696,6 @@ int main(int argc, char* argv[]) {
               fprintf(stderr, "rebasis,%ld,%.9f,%.9f,%.6f\n", n_seen - 1,
                       theta_max, staleness, new_score);
 
-              /* TODO 6: Επαναφορά της καθυστέρησης */
               if (late_since >= 0) {
                 long late = n_seen - late_since;
                 if (late > worst_late) worst_late = late;
@@ -725,15 +703,12 @@ int main(int argc, char* argv[]) {
               late_since = -1;
 
             } else {
-              /* TODO 7: Υπέρβαση χωρίς έτοιμο ring (Policy A waiting) */
               if (late_since < 0) {
                 late_since = n_seen;
               }
             }
           } else {
             was_below = 1;
-            /* TODO 8: Αν η γωνία πέσει ξανά κάτω από το κατώφλι, η αναμονή
-             * τελείωσε */
             late_since = -1;
           }
           fprintf(stderr, "angle,%ld,%.9f", n_seen - 1, theta_max);
@@ -761,7 +736,9 @@ int main(int argc, char* argv[]) {
     // breakpoints
     if (!have_bkpt) {
       for (int j = 0; j < cfg.k; j++) {
-        warmup_proj[warm_count * cfg.k + j] = y[j];
+        warmup_proj[warm_count * cfg.k + j] =
+            y[j];  // Append k-dimensional projection into row warm_count of
+                   // flat warmup matrix
       }
       warm_count++;
 

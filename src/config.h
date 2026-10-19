@@ -19,19 +19,49 @@ typedef struct {
   int pretty; /* 1 = letters for humans, 0 = numbers      */
 } RunOptions;
 
-/* Fills both structs with the defaults used when no file is given. */
+/**
+ * @brief Initializes algorithm and runtime configuration structures with safe
+ * default parameters.
+ *
+ * Sets up a baseline 3-component univariate configuration with a window size of
+ * 8 and binds I/O paths to the built-in synthetic array and standard output.
+ *
+ * @param cfg Pointer to the algorithm configuration structure to populate.
+ * @param run Pointer to the runtime I/O options structure to populate.
+ * @return void
+ */
 void config_defaults(Config* cfg, RunOptions* run);
 
-/* Reads a "key = value" file over the defaults, then resolves the settings
- * whose default depends on another setting, then validates everything.
+/**
+ * @brief Parses a key-value configuration file and validates all derived
+ * mathematical invariants.
  *
- * Returns 0 on success, -1 on any problem. Every failure prints one line to
- * stderr naming the key, the offending value and the line number.
+ * Overwrites default parameters with user-defined settings from disk, resolves
+ * order-independent dependent settings (such as flattened window
+ * dimensionality, effective Oja learning rate scaled by window length, and
+ * default bit budgets), and enforces strict domain bounds.
+ *
+ * @param path File system path to the configuration file.
+ * @param cfg Pointer to the algorithm configuration structure to update.
+ * @param run Pointer to the runtime I/O options structure to update.
+ * @return 0 on success, or -1 on file I/O error, syntax error, unknown key, or
+ * domain violation.
  */
 int config_load(const char* path, Config* cfg, RunOptions* run);
 
-/* Prints the settings actually in force, as a valid config file. Handy for
- * the log of an experiment: the run describes itself. */
+/**
+ * @brief Serializes the active configuration to an output stream as a valid,
+ * self-delimiting config file.
+ *
+ * Emits all active algorithm parameters and runtime paths bracketed by header
+ * and footer comment markers, allowing experiment logs to be sliced and re-fed
+ * directly as input configs.
+ *
+ * @param f Output file stream pointer (e.g., stderr or a log file).
+ * @param cfg Pointer to the active algorithm configuration structure.
+ * @param run Pointer to the active runtime I/O options structure.
+ * @return void
+ */
 void config_dump(FILE* f, const Config* cfg, const RunOptions* run);
 
 #endif /* CONFIG_H */
