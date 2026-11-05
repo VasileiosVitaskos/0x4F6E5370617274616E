@@ -380,9 +380,15 @@ int oja_blend(OjaPCA* dst, const OjaPCA* src, double beta) {
 
 #define SVD_TOL 1e-14
 
-int svd_values(double* a, int n, double* sv) {
+int svd_values(double* a, int n, double* sv, double* jacc) {
   if (!a || !sv || n < 1) {
     return -1;
+  }
+  if (jacc) {
+    memset(jacc, 0, (size_t)n * (size_t)n * sizeof(double));
+    for (int i = 0; i < n; i++) {
+      jacc[i * n + i] = 1.0;
+    }
   }
 
   for (int sweep = 0; sweep < SVD_MAX_SWEEPS; sweep++) {
@@ -424,6 +430,14 @@ int svd_values(double* a, int n, double* sv) {
           double qj = a[q * n + j];
           a[p * n + j] = c * pj - s * qj;
           a[q * n + j] = s * pj + c * qj;
+        }
+        if (jacc) {
+          for (int j = 0; j < n; j++) {
+            double jjp = jacc[p * n + j];
+            double jjq = jacc[q * n + j];
+            jacc[p * n + j] = c * jjp - s * jjq;
+            jacc[q * n + j] = s * jjp + c * jjq;
+          }
         }
 
         rotated = 1;
@@ -471,7 +485,7 @@ int subspace_angles(const OjaPCA* frozen, const OjaPCA* live, double* scratch,
       &scratch[(size_t)k *
                k];  // Partition caller scratch buffer: first k*k doubles hold
                     // Gram matrix, tail k doubles hold singular values
-  int sweeps = svd_values(scratch, k, sv);
+  int sweeps = svd_values(scratch, k, sv, NULL);
 
   if (sweeps < 0) {
     return -2;
@@ -497,6 +511,97 @@ int subspace_angles(const OjaPCA* frozen, const OjaPCA* live, double* scratch,
 
   /* the largest angle comes from the smallest cosine, because the cosine
      decreases as the angle grows. */
+
+  return 0;
+}
+
+/*
+ * Builds the map that carries coordinates from one epoch's basis into
+ * another's, and measures how much of the old subspace the new one
+ * cannot see.
+ *
+ * The k by k table of inner products between the two bases is not a
+ * rotation: it contracts, and what it contracts is exactly the part the
+ * old basis could not represent. A contraction cannot appear in a
+ * distance bound, so this returns the nearest rotation to it, plus the
+ * number the slack is built from.
+ *
+ *   sin_theta = sqrt(1 - s_min^2),  s_min = smallest singular value
+ *
+ * to         the basis we translate INTO    (k rows of m, orthonormal)
+ * from       the basis the coordinates came FROM (same k and m)
+ * scratch    2*k*k + k doubles, all overwritten
+ * rot        output, k*k row major: entry (i, j) at rot[i*k + j]
+ * sin_theta  output, dimensionless, in [0, 1]
+ *
+ * Returns 0 on success, -1 on a bad argument, -2 if the Jacobi sweep did
+ * not converge, -3 if a direction pair has collapsed (a singular value at
+ * zero): the two epochs are not translatable and the caller must skip the
+ * pair rather than use a meaningless rotation.
+ *
+ * Edge cases:
+ *   Both bases must be orthonormal or none of this is angles or lengths.
+ *   rot may have determinant -1, a reflection. Harmless here: a
+ *   reflection preserves lengths and the bound needs only lengths. It
+ *   matters only for the Lie layer, which needs a logarithm.
+ */
+int epoch_map(const OjaPCA* to, const OjaPCA* from, double* scratch,
+              double* rot, double* sin_theta) {
+  /* TODO guards. Same shape as the top of subspace_angles, lines 462-468,
+     plus rot and sin_theta must not be NULL: unlike there, neither
+     output is optional here. */
+
+  int k = to->k;
+  int m = to->m;
+
+  /* Three regions in one block. m_buf is destroyed by the sweep, jacc
+     collects the rotations it applied, sv ends up holding the row
+     lengths, which are the cosines. */
+  double* m_buf = scratch;
+  double* jacc = &scratch[(size_t)k * k];
+  double* sv = &scratch[2 * (size_t)k * k];
+
+  /* Step 1: the table. Row i is a row of to, column j a row of from. */
+  for (int i = 0; i < k; i++) {
+    for (int j = 0; j < k; j++) {
+      /* TODO m_buf[i * k + j] = dot_product(&to->v[i * m],
+         &from->v[j * m], m). Same line as spartan.c:477 with to in
+         place of frozen and from in place of live. */
+    }
+  }
+
+  /* Step 2: the sweep. The only place in the code that asks for the
+     accumulator; every other call passes NULL. */
+  int sweeps = svd_values(m_buf, k, sv, jacc);
+  if (sweeps < 0) return -2;
+
+  /* Step 3: the largest angle, through the smallest cosine. Note this
+     looks for a MINIMUM, the opposite of the loop at line 498. */
+  double s_min = 1.0;
+  for (int t = 0; t < k; t++) {
+    /* TODO clamp sv[t] into [0, 1] the way lines 500-501 do, then keep
+       the smallest clamped value in s_min. Clamp the value you compare,
+       not sv[t] in place, because Step 4 divides by sv[t] and wants the
+       real length. */
+  }
+  if (s_min < SPARTAN_EPS) return -3;
+  /* TODO *sin_theta = sqrt(1 - s_min * s_min). s_min is already clamped
+     at 1, so the argument cannot go negative. */
+
+  /* Step 4: the rotation, J transposed times Q.
+     Q row t is m_buf row t divided by sv[t].
+     Entry (i, j) is the sum over t of J[t][i] * Q[t][j].
+     The transpose lives in that index order on jacc: writing
+     jacc[i * k + t] instead gives a plausible matrix that is wrong. */
+  for (int i = 0; i < k; i++) {
+    for (int j = 0; j < k; j++) {
+      double acc = 0.0;
+      for (int t = 0; t < k; t++) {
+        /* TODO add jacc[t * k + i] * m_buf[t * k + j] / sv[t] to acc */
+      }
+      /* TODO rot[i * k + j] = acc */
+    }
+  }
 
   return 0;
 }

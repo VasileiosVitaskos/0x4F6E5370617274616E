@@ -378,7 +378,7 @@ void oja_orthonormality_error(const OjaPCA* p, double* max_dot,
  * @return Number of sweeps taken (1 to SVD_MAX_SWEEPS) on convergence, or -1 on
  * bad inputs or non-convergence.
  */
-int svd_values(double* a, int n, double* sv);
+int svd_values(double* a, int n, double* sv, double* jacc);
 /**
  * @brief Computes the principal angles (in radians) between two k-dimensional
  * orthonormal subspaces.
