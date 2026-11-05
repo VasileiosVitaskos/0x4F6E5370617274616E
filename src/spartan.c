@@ -547,9 +547,12 @@ int subspace_angles(const OjaPCA* frozen, const OjaPCA* live, double* scratch,
  */
 int epoch_map(const OjaPCA* to, const OjaPCA* from, double* scratch,
               double* rot, double* sin_theta) {
-  /* TODO guards. Same shape as the top of subspace_angles, lines 462-468,
-     plus rot and sin_theta must not be NULL: unlike there, neither
-     output is optional here. */
+  if (!scratch || !to || !from || !to->v || !from->v || !rot || !sin_theta) {
+    return -1;
+  }
+  if (to->k <= 0 || to->m <= 0 || to->k != from->k || to->m != from->m) {
+    return -1;
+  }
 
   int k = to->k;
   int m = to->m;
@@ -564,14 +567,12 @@ int epoch_map(const OjaPCA* to, const OjaPCA* from, double* scratch,
   /* Step 1: the table. Row i is a row of to, column j a row of from. */
   for (int i = 0; i < k; i++) {
     for (int j = 0; j < k; j++) {
-      /* TODO m_buf[i * k + j] = dot_product(&to->v[i * m],
-         &from->v[j * m], m). Same line as spartan.c:477 with to in
-         place of frozen and from in place of live. */
+      m_buf[i * k + j] = dot_product(&to->v[i * m], &from->v[j * m], m);
     }
   }
 
   /* Step 2: the sweep. The only place in the code that asks for the
-     accumulator; every other call passes NULL. */
+     accumulator, every other call passes NULL. */
   int sweeps = svd_values(m_buf, k, sv, jacc);
   if (sweeps < 0) return -2;
 
@@ -579,14 +580,15 @@ int epoch_map(const OjaPCA* to, const OjaPCA* from, double* scratch,
      looks for a MINIMUM, the opposite of the loop at line 498. */
   double s_min = 1.0;
   for (int t = 0; t < k; t++) {
-    /* TODO clamp sv[t] into [0, 1] the way lines 500-501 do, then keep
-       the smallest clamped value in s_min. Clamp the value you compare,
-       not sv[t] in place, because Step 4 divides by sv[t] and wants the
-       real length. */
+    double val = sv[t];
+    if (val > 1.0) val = 1.0;
+    if (val < 0.0) val = 0.0;
+    if (val < s_min) {
+      s_min = val;
+    }
   }
   if (s_min < SPARTAN_EPS) return -3;
-  /* TODO *sin_theta = sqrt(1 - s_min * s_min). s_min is already clamped
-     at 1, so the argument cannot go negative. */
+  *sin_theta = sqrt(1 - s_min * s_min);
 
   /* Step 4: the rotation, J transposed times Q.
      Q row t is m_buf row t divided by sv[t].
@@ -597,9 +599,9 @@ int epoch_map(const OjaPCA* to, const OjaPCA* from, double* scratch,
     for (int j = 0; j < k; j++) {
       double acc = 0.0;
       for (int t = 0; t < k; t++) {
-        /* TODO add jacc[t * k + i] * m_buf[t * k + j] / sv[t] to acc */
+        acc += jacc[t * k + i] * (m_buf[t * k + j] / sv[t]);
       }
-      /* TODO rot[i * k + j] = acc */
+      rot[i * k + j] = acc;
     }
   }
 
