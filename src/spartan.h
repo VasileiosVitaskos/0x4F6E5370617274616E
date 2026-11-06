@@ -46,10 +46,10 @@ typedef struct {
                        straightened */
   int warmup;       /* windows collected before the cut points are fixed */
   int total_bits;   /* bit budget for one whole word */
-  double lambda;
-  int d;
-  int m_time;
-  int ring_w;
+  double lambda; /* L2 penalty weight for deviating from reference bit split */
+  int d;         /* input channels (variables per time frame) */
+  int m_time;    /* time frames per window (m = d * m_time) */
+  int ring_w;    /* projection ring capacity W for dictionary rebuilds */
 } Config;
 /**
  * @brief Constructs a default univariate SPARTAN configuration for a given
@@ -402,7 +402,47 @@ int svd_values(double* a, int n, double* sv, double* jacc);
  */
 int subspace_angles(const OjaPCA* frozen, const OjaPCA* live, double* scratch,
                     double* angles, double* max_angle);
-
+/**
+ * @brief Returns the sign of the determinant of the map from one basis to
+ * another.
+ *
+ * Builds the k-by-k overlap table between the two bases and runs Gaussian
+ * elimination with partial pivoting, tracking only the sign: each row swap
+ * flips it and each pivot contributes its own. No SVD is needed, because
+ * the nearest rotation differs from the overlap table only by positive
+ * stretching factors, which cannot change a determinant's sign.
+ *
+ * @param to Pointer to the destination orthonormal basis (unmodified).
+ * @param from Pointer to the source orthonormal basis (unmodified).
+ * @param scratch Caller-allocated workspace of `k * k` doubles
+ * (overwritten).
+ * @return +1 if the two frames carry the same orientation, -1 if they do
+ * not, 0 if the overlap is singular or an argument is bad.
+ */
+int basis_det_sign(const OjaPCA* to, const OjaPCA* from, double* scratch);
+/**
+ * @brief Constructs the nearest orthogonal transition matrix between two epoch
+ * bases and computes the worst-case subspace leakage factor `sin(theta_max)`.
+ *
+ * Forms the k-by-k overlap matrix `M = V_to * V_from^T` and decomposes it via
+ * one-sided Jacobi SVD (`J * M = Q * diag(sv)`) to recover the Procrustes
+ * orthogonal map `rot = J^T * Q` that carries coordinates from `from` into
+ * `to` without contraction. Simultaneously extracts the smallest singular value
+ * `s_min = cos(theta_max)` and evaluates `sin_theta = sqrt(1 - s_min^2)` to
+ * bound orthogonal residual leakage across epochs.
+ *
+ * @param to Pointer to the target orthonormal OjaPCA basis (unmodified).
+ * @param from Pointer to the source orthonormal OjaPCA basis (unmodified).
+ * @param scratch Caller-allocated workspace of `2 * k * k + k` doubles
+ * (overwritten).
+ * @param rot Output k-by-k row-major orthogonal transition matrix.
+ * @param sin_theta Output pointer to receive `sin(theta_max)` in [0.0, 1.0].
+ * @return 0 on success, -1 on NULL pointers or mismatched dimensions, -2 if
+ * Jacobi SVD fails to converge, or -3 if a singular value collapses below
+ * `SPARTAN_EPS`.
+ */
+int epoch_map(const OjaPCA* to, const OjaPCA* from, double* scratch,
+              double* rot, double* sin_theta);
 /* ---------------- from numbers to letters ---------------- */
 /**
  * @brief Projects a mean-centered window onto the k rows of an OjaPCA basis.

@@ -646,6 +646,71 @@ int main(int argc, char* argv[]) {
                 staleness = 0.0;
               }
               if (staleness > worst_stale) worst_stale = staleness;
+              /* The dictionary is in sorted position order now, so the
+   basis that will write has to agree: letter j and cut point
+   row j must describe the same direction.
+   Done on the CANDIDATE and not on the frozen one, because
+   the outgoing frozen basis is the orientation reference a
+   few lines below and promoting first would destroy it.
+   oja_cand is a snapshot that no oja_update touches, so
+   permuting it is allowed. */
+              if (oja_permute_rows(&oja_cand, perm) != 0) {
+                fprintf(stderr,
+                        "Error: could not reorder the candidate basis\n");
+                t_algo += now_seconds() - t0;
+                goto cleanup;
+              }
+
+              /* Keep the orientation consistent with the epoch being
+                 replaced, so the map between any two epochs is a rotation
+                 and not a reflection: the Lie layer needs a logarithm and
+                 a reflection has none. MUST be after the permutation,
+                 because a permutation has a determinant of its own.
+                 angles_scratch is free here, staleness has already been
+                 read out of it. */
+              int or_sign =
+                  basis_det_sign(&oja_cand, &oja_frozen, angles_scratch);
+              if (or_sign < 0) {
+                int last = cfg.k - 1;
+
+                /* Negate the direction, and the projections already
+                   collected on it, so the two stay in step. The ring's
+                   columns were permuted by build_dictionary with the same
+                   perm, so row `last` of the basis and column `last` of
+                   the ring are the same direction.
+                   Any row would do, one flip always changes the
+                   orientation. The last one is convention. */
+                for (int i = 0; i < cfg.m; i++) {
+                  oja_cand.v[last * cfg.m + i] = -oja_cand.v[last * cfg.m + i];
+                }
+                for (int r = 0; r < cand_ring.count; r++) {
+                  cand_ring.buf[r * cfg.k + last] =
+                      -cand_ring.buf[r * cfg.k + last];
+                }
+
+                /* The running sums went stale with that column. Nothing
+                   reads cand_ring's moments today, but leaving them wrong
+                   is a trap for whoever does. One pass, once per epoch. */
+                pring_refresh(&cand_ring);
+
+                /* Re-cut rather than mirror the old cut points by hand. A
+                   cut point is a quantile of the collected projections and
+                   there is exactly one piece of code that makes one, which
+                   is also how batch SPARTAN does it. Mirroring would build
+                   the cut points a second way, and the index rule in
+                   compute_breakpoints counts from the low end, so the
+                   mirror lands one order statistic off every time.
+                   Only the cut points move. bits and alphabet come from
+                   ev, which is a variance, and a variance does not know
+                   about signs. The other k-1 positions recompute to
+                   bit-identical values, the same numbers through the same
+                   code, so there is no reason to carve out just one. */
+                compute_breakpoints(cand_ring.buf, cand_ring.count, cfg.k,
+                                    alphabet_arr, bkpt);
+
+                fprintf(stderr, "flip,%ld,%d\n", n_seen - 1, last);
+              }
+
               int frz_rc = oja_copy_from(&oja_frozen, &oja_cand);
               if (frz_rc != 0) {
                 fprintf(
@@ -656,18 +721,6 @@ int main(int argc, char* argv[]) {
                 goto cleanup;
               }
               symbol_basis = &oja_frozen;
-              // The dictionary is in sorted position order now, so the basis
-              // that writes has to agree. Letter j and cut point row j must
-              // describe the same direction
-              if (oja_permute_rows(&oja_frozen, perm) !=
-                  0)  // Permute frozen basis rows to match the sorted
-                      // dictionary column order produced by build_dictionary
-              {
-                fprintf(stderr, "Error: could not reorder the frozen basis\n");
-                t_algo += now_seconds() - t0;
-                goto cleanup;
-              }
-
               pring_reset(&ring);
 
               staging = 0;

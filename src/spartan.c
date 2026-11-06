@@ -608,6 +608,99 @@ int epoch_map(const OjaPCA* to, const OjaPCA* from, double* scratch,
   return 0;
 }
 
+/*
+ * The sign of the determinant of the map from one basis to another.
+ *
+ * +1 the two frames turn the same way, -1 they do not, 0 the two subspaces
+ * are degenerate against each other and the question has no answer.
+ *
+ * A sign needs no SVD. The map is the nearest rotation to the k by k
+ * overlap table, and the two differ only by positive stretching factors,
+ * which cannot change the sign of a determinant. So the sign of the
+ * overlap table's own determinant is the whole answer.
+ *
+ * The sign is arbitrary rather than meaningful: a PCA direction and its
+ * negative are equally valid, Gram-Schmidt picks one at random, and every
+ * pick flips this. A reflection costs the bound nothing, since it
+ * preserves lengths. It is fatal to the Lie layer, which needs a
+ * logarithm, and a reflection has none.
+ *
+ * to, from   two orthonormal bases, same k and same m, neither modified
+ * scratch    k*k doubles, overwritten
+ *
+ * Returns +1, -1 or 0. A bad argument also returns 0: the caller cannot
+ * tell that from degenerate and does not need to, because both mean do
+ * nothing.
+ *
+ * Edge cases:
+ *   The singularity threshold is SPARTAN_EPS, the same one epoch_map uses,
+ *   so the two agree on exactly which pairs are unusable.
+ *   Fixing each incoming basis against the one it replaces holds the
+ *   determinant at +1 for EVERY pair of epochs, not only neighbouring
+ *   ones, because the sign is transitive while no pair has reached 90
+ *   degrees. Past that it stops being transitive, which is the same
+ *   boundary at which epoch_map refuses the pair.
+ *   A per-basis rule does NOT work in place of this one: making the
+ *   largest entry of each row positive leaves about half of all pairs
+ *   reflected, which is what doing nothing leaves.
+ */
+int basis_det_sign(const OjaPCA* to, const OjaPCA* from, double* scratch) {
+  if (!scratch || !to || !from || !to->v || !from->v) {
+    return 0;
+  }
+  if (to->k <= 0 || to->m <= 0 || to->k != from->k || to->m != from->m) {
+    return 0;
+  }
+
+  int k = to->k;
+  int m = to->m;
+
+  /* The overlap table, exactly as epoch_map builds it at line 568. */
+  for (int i = 0; i < k; i++) {
+    for (int j = 0; j < k; j++) {
+      scratch[i * k + j] = dot_product(&to->v[i * m], &from->v[j * m], m);
+    }
+  }
+
+  /* Gaussian elimination with partial pivoting. The determinant itself is
+     never formed, only its sign: each row swap flips it, each pivot
+     contributes its own. Multiplying the pivots together would risk
+     overflow for a magnitude that is thrown away anyway. */
+  int sign = 1;
+  for (int c = 0; c < k; c++) {
+    /* The row at or below c with the largest magnitude in column c.
+       Pivoting here is not about accuracy, it is about not dividing by
+       something that is zero or nearly so. */
+    int piv = c;
+    for (int r = c + 1; r < k; r++) {
+      if (fabs(scratch[r * k + c]) > fabs(scratch[piv * k + c])) piv = r;
+    }
+
+    if (fabs(scratch[piv * k + c]) < SPARTAN_EPS) return 0;
+
+    if (piv != c) {
+      for (int j = 0; j < k; j++) {
+        double tmp = scratch[c * k + j];
+        scratch[c * k + j] = scratch[piv * k + j];
+        scratch[piv * k + j] = tmp;
+      }
+      sign = -sign;
+    }
+
+    if (scratch[c * k + c] < 0.0) sign = -sign;
+
+    /* Clear below the pivot so the next column's pivot is honest. */
+    for (int r = c + 1; r < k; r++) {
+      double f = scratch[r * k + c] / scratch[c * k + c];
+      for (int j = c; j < k; j++) {
+        scratch[r * k + j] -= f * scratch[c * k + j];
+      }
+    }
+  }
+
+  return sign;
+}
+
 /* ---------------- from numbers to letters ---------------- */
 
 static int cmp_double(const void* a, const void* b) {
