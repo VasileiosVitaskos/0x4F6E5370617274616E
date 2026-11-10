@@ -24,51 +24,60 @@
 /* ---------------- small parsing helpers ---------------- */
 
 /* Moves the start forward and writes a '\0' over the trailing blanks. */
-static char* trim(char* s) {
-  while (*s && isspace((unsigned char)*s)) s++;
-  char* e = s + strlen(s);
+static char *trim(char *s) {
+  while (*s && isspace((unsigned char)*s))
+    s++;
+  char *e = s + strlen(s);
   while (e > s && isspace((unsigned char)e[-1]))
-    e--;  // Walk tail pointer backward via negative index e[-1] to strip
-          // trailing whitespace in-place
+    e--; // Walk tail pointer backward via negative index e[-1] to strip
+         // trailing whitespace in-place
   *e = '\0';
   return s;
 }
 
 /* strtol with the three checks people forget: nothing read, junk after the
  * number, out of range. atoi has none of them and returns 0 on garbage. */
-static int parse_long(const char* text, long* out) {
+static int parse_long(const char *text, long *out) {
   errno = 0;
-  char* end;
+  char *end;
   long v = strtol(text, &end,
-                  10);  // Capture first unparsed character address in end to
-                        // detect empty strings or trailing non-numeric junk
-  if (end == text) return -1;
-  while (*end && isspace((unsigned char)*end)) end++;
-  if (*end != '\0') return -1;
-  if (errno == ERANGE) return -1;
+                  10); // Capture first unparsed character address in end to
+                       // detect empty strings or trailing non-numeric junk
+  if (end == text)
+    return -1;
+  while (*end && isspace((unsigned char)*end))
+    end++;
+  if (*end != '\0')
+    return -1;
+  if (errno == ERANGE)
+    return -1;
   *out = v;
   return 0;
 }
 
-static int parse_double(const char* text, double* out) {
+static int parse_double(const char *text, double *out) {
   errno = 0;
-  char* end;
+  char *end;
   double v = strtod(text, &end);
-  if (end == text) return -1;
-  while (*end && isspace((unsigned char)*end)) end++;
-  if (*end != '\0') return -1;
-  if (errno == ERANGE) return -1;
+  if (end == text)
+    return -1;
+  while (*end && isspace((unsigned char)*end))
+    end++;
+  if (*end != '\0')
+    return -1;
+  if (errno == ERANGE)
+    return -1;
   *out = v;
   return 0;
 }
 
-static void copy_path(char* dst, const char* src) {
+static void copy_path(char *dst, const char *src) {
   snprintf(dst, CFG_PATH_MAX, "%s", src);
 }
 
 /* ---------------- defaults ---------------- */
 
-void config_defaults(Config* cfg, RunOptions* run) {
+void config_defaults(Config *cfg, RunOptions *run) {
   *cfg = config_default_mv(3, 1, 8);
   copy_path(run->input, "builtin");
   copy_path(run->words_out, "-");
@@ -78,15 +87,16 @@ void config_defaults(Config* cfg, RunOptions* run) {
 
 /* ---------------- validation ---------------- */
 
-static int fail(const char* msg, const char* key, long got) {
+static int fail(const char *msg, const char *key, long got) {
   fprintf(stderr, "config: %s (%s = %ld)\n", msg, key, got);
   return -1;
 }
 
-static int validate(const Config* c) {
+static int validate(const Config *c) {
   if (c->k < 1)
     return fail("components must be at least 1", "components", c->k);
-  if (c->d < 1) return fail("channels must be at least 1", "channels", c->d);
+  if (c->d < 1)
+    return fail("channels must be at least 1", "channels", c->d);
   if (c->m_time < 1)
     return fail("window must be at least 1", "window", c->m_time);
   if (c->k > c->m)
@@ -110,11 +120,10 @@ static int validate(const Config* c) {
     return fail("angle_period must be at least 1", "angle_period",
                 c->angle_period);
   if (c->angle_period % c->gs_period != 0)
-    return fail(
-        "angle_period must be a multiple of gs_period, otherwise the "
-        "angle is read on a basis that is not orthonormal and the "
-        "numbers are not angles",
-        "angle_period", c->angle_period);
+    return fail("angle_period must be a multiple of gs_period, otherwise the "
+                "angle is read on a basis that is not orthonormal and the "
+                "numbers are not angles",
+                "angle_period", c->angle_period);
   if (c->step <= 0.0) {
     fprintf(stderr, "config: step must be positive (got %g)\n", c->step);
     return -1;
@@ -137,16 +146,24 @@ static int validate(const Config* c) {
     fprintf(stderr, "config: lambda cannot be negative (got %g)\n", c->lambda);
     return -1;
   }
+  if (c->freeze_ahead < 0.0 || c->freeze_ahead > 2.0) {
+    fprintf(stderr,
+            "config: freeze_ahead must be between 0 and 2 (got %g). 0 turns "
+            "prediction off, 0.5 aims at the middle of the next epoch, and "
+            "above 1 freezes past where the policy will ever allow\n",
+            c->freeze_ahead);
+    return -1;
+  }
   return 0;
 }
 
 /* ---------------- the reader ---------------- */
 
-int config_load(const char* path, Config* cfg, RunOptions* run) {
+int config_load(const char *path, Config *cfg, RunOptions *run) {
   config_defaults(cfg, run);
   long stride = UNSET, total_bits = UNSET;
 
-  FILE* f = fopen(path, "r");
+  FILE *f = fopen(path, "r");
   if (!f) {
     fprintf(stderr, "config: cannot open '%s'\n", path);
     return -1;
@@ -159,22 +176,24 @@ int config_load(const char* path, Config* cfg, RunOptions* run) {
   while (fgets(line, sizeof line, f)) {
     lineno++;
 
-    char* hash = strchr(line, '#');
-    if (hash) *hash = '\0';
+    char *hash = strchr(line, '#');
+    if (hash)
+      *hash = '\0';
 
-    char* body = trim(line);
-    if (*body == '\0') continue;
+    char *body = trim(line);
+    if (*body == '\0')
+      continue;
 
-    char* eq = strchr(body, '=');
+    char *eq = strchr(body, '=');
     if (!eq) {
       fprintf(stderr, "config: line %d is not 'key = value'\n", lineno);
       rc = -1;
       break;
     }
-    *eq = '\0';  // Split line buffer in-place at '=' so body points to the key
-                 // and eq + 1 points to the value
-    char* key = trim(body);
-    char* val = trim(eq + 1);
+    *eq = '\0'; // Split line buffer in-place at '=' so body points to the key
+                // and eq + 1 points to the value
+    char *key = trim(body);
+    char *val = trim(eq + 1);
 
     long iv;
     double dv;
@@ -231,13 +250,16 @@ int config_load(const char* path, Config* cfg, RunOptions* run) {
         goto bad_value;
       cfg->angle_period = (int)iv;
     } else if (strcmp(key, "step") == 0) {
-      if (parse_double(val, &dv) != 0) goto bad_value;
+      if (parse_double(val, &dv) != 0)
+        goto bad_value;
       cfg->step = dv;
     } else if (strcmp(key, "basis_average") == 0) {
-      if (parse_double(val, &dv) != 0) goto bad_value;
+      if (parse_double(val, &dv) != 0)
+        goto bad_value;
       cfg->beta = dv;
     } else if (strcmp(key, "theta_threshold_deg") == 0) {
-      if (parse_double(val, &dv) != 0) goto bad_value;
+      if (parse_double(val, &dv) != 0)
+        goto bad_value;
       cfg->theta_threshold_deg = dv;
     } else if (strcmp(key, "learning_rate") == 0) {
       fprintf(stderr,
@@ -249,12 +271,17 @@ int config_load(const char* path, Config* cfg, RunOptions* run) {
       rc = -1;
       break;
     } else if (strcmp(key, "lambda") == 0) {
-      if (parse_double(val, &dv) != 0) goto bad_value;
+      if (parse_double(val, &dv) != 0)
+        goto bad_value;
       cfg->lambda = dv;
     } else if (strcmp(key, "ring_window") == 0) {
       if (parse_long(val, &iv) != 0 || iv < INT_MIN || iv > INT_MAX)
         goto bad_value;
       cfg->ring_w = (int)iv;
+    } else if (strcmp(key, "freeze_ahead") == 0) {
+      if (parse_double(val, &dv) != 0)
+        goto bad_value;
+      cfg->freeze_ahead = dv;
     } else {
       fprintf(stderr, "config: line %d, unknown key '%s'\n", lineno, key);
       rc = -1;
@@ -270,15 +297,16 @@ int config_load(const char* path, Config* cfg, RunOptions* run) {
   }
 
   fclose(f);
-  if (rc != 0) return rc;
+  if (rc != 0)
+    return rc;
 
   // m is derived, never given directly.
   cfg->m = cfg->d * cfg->m_time;
 
   cfg->lr =
       cfg->step /
-      cfg->m;  // Scale step by window length m because z-normalized windows
-               // have norm sqrt(m), making raw projections scale with m
+      cfg->m; // Scale step by window length m because z-normalized windows
+              // have norm sqrt(m), making raw projections scale with m
   cfg->theta_threshold = cfg->theta_threshold_deg * SPARTAN_DEG_TO_RAD;
   cfg->stride = (stride == UNSET) ? cfg->m_time : (int)stride;
   cfg->total_bits = (total_bits == UNSET) ? 2 * cfg->k : (int)total_bits;
@@ -288,7 +316,7 @@ int config_load(const char* path, Config* cfg, RunOptions* run) {
 
 /* ---------------- echo ---------------- */
 
-void config_dump(FILE* f, const Config* cfg, const RunOptions* run) {
+void config_dump(FILE *f, const Config *cfg, const RunOptions *run) {
   fprintf(f, "# settings in force for this run\n");
   fprintf(f, "input         = %s\n", run->input);
   fprintf(f, "channels      = %d\n", cfg->d);
@@ -309,5 +337,6 @@ void config_dump(FILE* f, const Config* cfg, const RunOptions* run) {
   fprintf(f, "out_dir       = %s\n", run->out_dir);
   fprintf(f, "pretty        = %d\n", run->pretty);
   fprintf(f, "ring_window   = %d\n", cfg->ring_w);
+  fprintf(f, "freeze_ahead  = %.*g\n", DBL_DECIMAL_DIG, cfg->freeze_ahead);
   fprintf(f, "# end of settings\n");
 }

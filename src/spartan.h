@@ -50,6 +50,9 @@ typedef struct {
   int d;         /* input channels (variables per time frame) */
   int m_time;    /* time frames per window (m = d * m_time) */
   int ring_w;    /* projection ring capacity W for dictionary rebuilds */
+  double freeze_ahead; /* how far past the data to freeze a candidate, in
+                        units of theta_threshold. 0 turns it off and the
+                        candidate is a plain snapshot, as before */
 } Config;
 /**
  * @brief Constructs a default univariate SPARTAN configuration for a given
@@ -91,7 +94,7 @@ Config config_default_mv(int k, int d, int m_time);
  * @param n Number of elements in each vector.
  * @return The scalar dot product of v1 and v2.
  */
-double dot_product(const double* v1, const double* v2, size_t n);
+double dot_product(const double *v1, const double *v2, size_t n);
 /**
  * @brief Applies in-place population z-score normalization to a single channel
  * vector.
@@ -104,12 +107,12 @@ double dot_product(const double* v1, const double* v2, size_t n);
  * @param m Number of elements in the array.
  * @return void
  */
-void znorm_row(double* x, int m);
+void znorm_row(double *x, int m);
 
 /* ---------------- running average of the stream ---------------- */
 
 typedef struct {
-  double* mean;
+  double *mean;
   long n;
   int m;
 } RunningMean;
@@ -123,7 +126,7 @@ typedef struct {
  * @param m Flattened window dimensionality (d * m_time).
  * @return 0 on success, or -1 if m <= 0 or memory allocation fails.
  */
-int rmean_init(RunningMean* rm, int m);
+int rmean_init(RunningMean *rm, int m);
 /**
  * @brief Frees heap memory owned by a RunningMean accumulator and resets its
  * state.
@@ -133,7 +136,7 @@ int rmean_init(RunningMean* rm, int m);
  * @param rm Pointer to the RunningMean structure to deallocate.
  * @return void
  */
-void rmean_free(RunningMean* rm);
+void rmean_free(RunningMean *rm);
 /**
  * @brief Updates the streaming mean vector in-place with a newly observed
  * window.
@@ -145,7 +148,7 @@ void rmean_free(RunningMean* rm);
  * @param x Pointer to the newly observed window vector of length m.
  * @return void
  */
-void rmean_update(RunningMean* rm, const double* x);
+void rmean_update(RunningMean *rm, const double *x);
 
 /* ---------------- the last W projections ---------------- */
 
@@ -161,9 +164,9 @@ void rmean_update(RunningMean* rm, const double* x);
  * cost k operations instead of W*k.
  */
 typedef struct {
-  double* buf; /* cap rows of k numbers, flat, in ring order */
-  double* s1;  /* k sums */
-  double* s2;  /* k sums of squares */
+  double *buf; /* cap rows of k numbers, flat, in ring order */
+  double *s1;  /* k sums */
+  double *s2;  /* k sums of squares */
   int cursor;  /* where the next projection is written, in [0, cap) */
   int count;   /* how many are in, saturating at cap */
   int cap;     /* W */
@@ -182,7 +185,7 @@ typedef struct {
  * @param k Number of subspace dimensions per projection (must be >= 1).
  * @return 0 on success, or -1 on invalid dimensions or allocation failure.
  */
-int pring_init(ProjRing* r, int cap, int k);
+int pring_init(ProjRing *r, int cap, int k);
 /**
  * @brief Releases all heap buffers associated with a ProjRing instance.
  *
@@ -192,7 +195,7 @@ int pring_init(ProjRing* r, int cap, int k);
  * @param r Pointer to the ProjRing structure to deallocate.
  * @return void
  */
-void pring_free(ProjRing* r);
+void pring_free(ProjRing *r);
 /**
  * @brief Inserts a new k-dimensional projection into the ring and updates
  * running moments in O(k).
@@ -205,7 +208,7 @@ void pring_free(ProjRing* r);
  * @param y Pointer to the incoming k-dimensional projection vector.
  * @return void
  */
-void pring_push(ProjRing* r, const double* y);
+void pring_push(ProjRing *r, const double *y);
 /**
  * @brief Computes normalized variance shares across the k directions from
  * running moments in O(k).
@@ -219,7 +222,7 @@ void pring_push(ProjRing* r, const double* y);
  * @param ev Output array of length k to receive normalized importance shares.
  * @return void
  */
-void pring_importances(const ProjRing* r, double* ev);
+void pring_importances(const ProjRing *r, double *ev);
 /**
  * @brief Recomputes running moment sums `s1` and `s2` from scratch over the
  * active ring buffer.
@@ -231,7 +234,7 @@ void pring_importances(const ProjRing* r, double* ev);
  * @param r Pointer to the active ProjRing instance.
  * @return void
  */
-void pring_refresh(ProjRing* r);
+void pring_refresh(ProjRing *r);
 /**
  * @brief Clears all stored projections and resets ring cursors and moments to
  * zero without reallocating.
@@ -243,13 +246,13 @@ void pring_refresh(ProjRing* r);
  * @param r Pointer to the active ProjRing instance.
  * @return void
  */
-void pring_reset(ProjRing* r);
+void pring_reset(ProjRing *r);
 
 /* ---------------- the PCA directions ---------------- */
 
 typedef struct {
-  double* v; /* k rows of m numbers, flat; row j starts at v[j*m] */
-  double* u; /* scratch room, m numbers */
+  double *v; /* k rows of m numbers, flat; row j starts at v[j*m] */
+  double *u; /* scratch room, m numbers */
   int k, m;
 } OjaPCA;
 /**
@@ -266,7 +269,7 @@ typedef struct {
  * @return 0 on success, or -1 on invalid dimensions or memory allocation
  * failure.
  */
-int oja_init(OjaPCA* p, int k, int m);
+int oja_init(OjaPCA *p, int k, int m);
 /**
  * @brief Releases the basis matrix and deflation scratch buffer owned by an
  * OjaPCA instance.
@@ -276,7 +279,7 @@ int oja_init(OjaPCA* p, int k, int m);
  * @param p Pointer to the OjaPCA structure to deallocate.
  * @return void
  */
-void oja_free(OjaPCA* p);
+void oja_free(OjaPCA *p);
 /**
  * @brief Performs a sequential Sanger/Oja stochastic gradient update with
  * post-update residual deflation.
@@ -291,7 +294,7 @@ void oja_free(OjaPCA* p);
  * @param lr Effective learning rate (`step / m`).
  * @return void
  */
-void oja_update(OjaPCA* p, const double* xc, double lr);
+void oja_update(OjaPCA *p, const double *xc, double lr);
 /**
  * @brief Applies exponential moving average (Polyak-Ruppert) smoothing from a
  * live basis into a target basis.
@@ -305,7 +308,7 @@ void oja_update(OjaPCA* p, const double* xc, double lr);
  * @return 0 on success, or -1 on NULL pointers, mismatched dimensions, or
  * out-of-range beta.
  */
-int oja_blend(OjaPCA* dst, const OjaPCA* src, double beta);
+int oja_blend(OjaPCA *dst, const OjaPCA *src, double beta);
 /**
  * @brief Re-orthonormalizes the rows of an OjaPCA basis in-place using Modified
  * Gram-Schmidt.
@@ -317,7 +320,7 @@ int oja_blend(OjaPCA* dst, const OjaPCA* src, double beta);
  * @param p Pointer to the OjaPCA basis to orthonormalize.
  * @return void
  */
-void gram_schmidt(OjaPCA* p);
+void gram_schmidt(OjaPCA *p);
 
 /**
  * @brief Copies the k-by-m basis matrix from a source OjaPCA instance into a
@@ -331,7 +334,7 @@ void gram_schmidt(OjaPCA* p);
  * @return 0 on success, -1 if either pointer or basis buffer is NULL, or -2 if
  * k or m dimensions differ.
  */
-int oja_copy_from(OjaPCA* dst, const OjaPCA* src);
+int oja_copy_from(OjaPCA *dst, const OjaPCA *src);
 /**
  * @brief Reorders the rows of a snapshot basis in-place according to a gather
  * permutation vector.
@@ -346,7 +349,7 @@ int oja_copy_from(OjaPCA* dst, const OjaPCA* src);
  * @return 0 on success, or -1 on NULL arguments, out-of-bounds indices, or
  * scratch allocation failure.
  */
-int oja_permute_rows(OjaPCA* p, const int* perm);
+int oja_permute_rows(OjaPCA *p, const int *perm);
 
 /**
  * @brief Measures the worst-case pairwise inner product and unit-norm deviation
@@ -361,8 +364,8 @@ int oja_permute_rows(OjaPCA* p, const int* perm);
  * @param max_len Output pointer for `max_j | ||v_j||_2 - 1 |` (may be NULL).
  * @return void
  */
-void oja_orthonormality_error(const OjaPCA* p, double* max_dot,
-                              double* max_len);
+void oja_orthonormality_error(const OjaPCA *p, double *max_dot,
+                              double *max_len);
 /**
  * @brief Computes the singular values of a small n-by-n matrix in-place via
  * one-sided Jacobi SVD.
@@ -378,7 +381,7 @@ void oja_orthonormality_error(const OjaPCA* p, double* max_dot,
  * @return Number of sweeps taken (1 to SVD_MAX_SWEEPS) on convergence, or -1 on
  * bad inputs or non-convergence.
  */
-int svd_values(double* a, int n, double* sv, double* jacc);
+int svd_values(double *a, int n, double *sv, double *jacc);
 /**
  * @brief Computes the principal angles (in radians) between two k-dimensional
  * orthonormal subspaces.
@@ -400,8 +403,8 @@ int svd_values(double* a, int n, double* sv, double* jacc);
  * @return 0 on success, -1 on NULL pointers or mismatched dimensions, or -2 if
  * Jacobi SVD fails to converge.
  */
-int subspace_angles(const OjaPCA* frozen, const OjaPCA* live, double* scratch,
-                    double* angles, double* max_angle);
+int subspace_angles(const OjaPCA *frozen, const OjaPCA *live, double *scratch,
+                    double *angles, double *max_angle);
 /**
  * @brief Returns the sign of the determinant of the map from one basis to
  * another.
@@ -419,7 +422,7 @@ int subspace_angles(const OjaPCA* frozen, const OjaPCA* live, double* scratch,
  * @return +1 if the two frames carry the same orientation, -1 if they do
  * not, 0 if the overlap is singular or an argument is bad.
  */
-int basis_det_sign(const OjaPCA* to, const OjaPCA* from, double* scratch);
+int basis_det_sign(const OjaPCA *to, const OjaPCA *from, double *scratch);
 /**
  * @brief Constructs the nearest orthogonal transition matrix between two epoch
  * bases and computes the worst-case subspace leakage factor `sin(theta_max)`.
@@ -441,8 +444,38 @@ int basis_det_sign(const OjaPCA* to, const OjaPCA* from, double* scratch);
  * Jacobi SVD fails to converge, or -3 if a singular value collapses below
  * `SPARTAN_EPS`.
  */
-int epoch_map(const OjaPCA* to, const OjaPCA* from, double* scratch,
-              double* rot, double* sin_theta);
+int epoch_map(const OjaPCA *to, const OjaPCA *from, double *scratch,
+              double *map, double *rot, double *sin_theta);
+void word_box(const int *word, const double *bkpt, const int *alphabet, int k,
+              double x_max, double *lo, double *hi);
+
+void box_through(const double *map, const double *lo, const double *hi, int k,
+                 double *out_lo, double *out_hi);
+
+double residual_len(const double *y, int k, double x_norm);
+
+double cross_epoch_mindist(const double *q_lo, const double *q_hi,
+                           const double *c_lo, const double *c_hi, int k,
+                           double sin_theta, double r);
+/**
+ * @brief Moves a subspace along the motion that carried one basis onto
+ * another, scaled by a factor.
+ *
+ * The motion between two k-dimensional subspaces is k simultaneous plane
+ * rotations whose angles are exactly the principal angles. The planes are
+ * mutually orthogonal, so scaling every angle by the same factor and
+ * rebuilding is exact: no series, no iteration, no re-orthonormalisation.
+ *
+ * @param from Starting orthonormal basis (unmodified).
+ * @param to Orthonormal basis the motion has reached (unmodified).
+ * @param f Scale; 0 reproduces `from`, 1 the span of `to`, more extrapolates.
+ * @param out Pre-allocated result with the same k and m; must not alias.
+ * @param scratch Caller-allocated workspace of `2*k*k + k + 2*m` doubles.
+ * @return 0 on success, -1 on a bad argument, -2 if the Jacobi sweep failed,
+ * -3 if a principal pair is degenerate and the motion is undefined.
+ */
+int subspace_advance(const OjaPCA *from, const OjaPCA *to, double f,
+                     OjaPCA *out, double *scratch);
 /* ---------------- from numbers to letters ---------------- */
 /**
  * @brief Projects a mean-centered window onto the k rows of an OjaPCA basis.
@@ -454,7 +487,7 @@ int epoch_map(const OjaPCA* to, const OjaPCA* from, double* scratch,
  * @param y Output array of length k to receive the subspace coordinates.
  * @return void
  */
-void project(const OjaPCA* p, const double* xc, double* y);
+void project(const OjaPCA *p, const double *xc, double *y);
 /**
  * @brief Estimates normalized variance shares across k subspace coordinates
  * from a batch of projections.
@@ -471,7 +504,7 @@ void project(const OjaPCA* p, const double* xc, double* y);
  * shares.
  * @return void
  */
-void estimate_eigenvalues(const double* proj, int n, int k, double* ev);
+void estimate_eigenvalues(const double *proj, int n, int k, double *ev);
 /**
  * @brief Computes empirical equiprobable quantile breakpoints for each subspace
  * coordinate.
@@ -490,8 +523,8 @@ void estimate_eigenvalues(const double* proj, int n, int k, double* ev);
  * per-coordinate cut points.
  * @return void
  */
-void compute_breakpoints(const double* proj, int n, int k, const int* alphabet,
-                         double* bkpt);
+void compute_breakpoints(const double *proj, int n, int k, const int *alphabet,
+                         double *bkpt);
 /**
  * @brief Quantizes a k-dimensional projection vector into a discrete symbolic
  * word.
@@ -509,8 +542,8 @@ void compute_breakpoints(const double* proj, int n, int k, const int* alphabet,
  * indices.
  * @return void
  */
-void digitize(const double* y, const double* bkpt, int k, const int* alphabet,
-              int* word);
+void digitize(const double *y, const double *bkpt, int k, const int *alphabet,
+              int *word);
 
 /* ---------------- splitting the bit budget ---------------- */
 
@@ -538,8 +571,8 @@ void digitize(const double* y, const double* bkpt, int k, const int* alphabet,
  * @return 0 on success, or -1 on invalid inputs, allocation failure, or an
  * infeasible bit budget.
  */
-int daa_allocate(const double* ev, int k, int total_bits, double lamda,
-                 const int* ref_bits, int* bits, double* score);
+int daa_allocate(const double *ev, int k, int total_bits, double lamda,
+                 const int *ref_bits, int *bits, double *score);
 
 /**
  * @brief Evaluates the regularized DAA objective value for a given bit
@@ -556,8 +589,8 @@ int daa_allocate(const double* ev, int k, int total_bits, double lamda,
  * @param bits Bit allocation vector of length k to evaluate.
  * @return The scalar DAA objective score.
  */
-double daa_score(const double* ev, int k, int total_bits, double lamda,
-                 const int* ref_bits, const int* bits);
+double daa_score(const double *ev, int k, int total_bits, double lamda,
+                 const int *ref_bits, const int *bits);
 /**
  * @brief Computes the marginal 1-bit swap optimality gap of the active bit
  * allocation in O(k) time.
@@ -579,6 +612,6 @@ double daa_score(const double* ev, int k, int total_bits, double lamda,
  * @return Positive marginal gain of the best 1-bit transfer, or 0.0 if the
  * current split is optimal.
  */
-double daa_gap(const double* ev, int k, int total_bits, double lamda,
-               const int* ref_bits, const int* bits);
+double daa_gap(const double *ev, int k, int total_bits, double lamda,
+               const int *ref_bits, const int *bits);
 #endif /* SPARTAN_H */

@@ -62,7 +62,14 @@ STRIDE = M_TIME  # no overlap: each window is an independent draw, and
 K = 8  # kept directions, and letters per word
 TOTAL_BITS = 16  # even split would be 2 bits per position
 LAMBDA_REG = 0.5  # how hard the objective pulls towards the even split
-MAX_BITS = 8  # must equal MAX_BITS in src/spartan.h
+# Must match src/spartan.h:20-21, where the cap is DERIVED from the alphabet:
+#     #define MAX_ALPHABET 16
+#     #define MAX_BITS (__builtin_ctz(MAX_ALPHABET))
+# Derived here the same way, as tools/batch_truth.py:38-39 does, so there is
+# one number to change and not two that can drift apart. It used to say 8,
+# which let best_split hand out allocations the C cannot write.
+MAX_ALPHABET = 16
+MAX_BITS = MAX_ALPHABET.bit_length() - 1
 N_WINDOWS = 4000  # 4000 * 256 = 1,024,000 samples, about 25 MB per file
 SIGMA = 0.20  # isotropic noise added to every window
 WARMUP = 512  # windows collected before the first dictionary
@@ -112,6 +119,23 @@ def orthonormal_basis(rng, m, count, forbidden):
             continue  # drew something in the killed span
         out.append(v / nrm)
     return np.array(out)
+
+
+def span_deficit(A, B):
+    """How far the row space of B is from the row space of A, as
+    1 - (smallest singular value of A @ B.T). Zero means the same span.
+
+    This is the test for "did the span move AT ALL", and arccos is the wrong
+    tool for it. Near an angle of zero the cosine is flat: cos(t) = 1 - t^2/2,
+    so a rounding error of 1e-16 in the cosine comes back from arccos as an
+    angle of about 1.5e-8. An assert of "angle < 1e-12" therefore fails on a
+    span that has not moved. The deficit is read straight off the singular
+    value, with no arccos in between, and stays at rounding level.
+
+    Both must have orthonormal rows.
+    """
+    sv = np.linalg.svd(A @ B.T, compute_uv=False)
+    return float(max(0.0, 1.0 - sv.min()))
 
 
 def principal_angles(A, B):
@@ -330,9 +354,11 @@ def build_degenerate(seed):
         W[0] = np.cos(th) * W0[0] + np.sin(th) * W0[1]
         W[1] = -np.sin(th) * W0[0] + np.cos(th) * W0[1]
 
-        a = float(principal_angles(W0, W).max())
-        worst = max(worst, a)
-        angle_true.append(a)
+        worst = max(worst, span_deficit(W0, W))
+        # The true angle of the SPAN is zero by construction, and the assert
+        # below is what checks it. Recording arccos here instead would write
+        # its 1e-8 rounding floor into the truth file as if it were data.
+        angle_true.append(0.0)
 
         g = rng.standard_normal(K)
         X[t] = (g * np.sqrt(lam)) @ W + SIGMA * rng.standard_normal(M_TIME)
@@ -341,8 +367,9 @@ def build_degenerate(seed):
     # we think it is testing, and silently producing it would be worse than
     # producing nothing.
     assert worst < 1e-12, (
-        "degenerate_span: the subspace MOVED, worst principal angle %.3e rad. "
-        "The rotation is supposed to stay inside the span." % worst
+        "degenerate_span: the subspace MOVED, worst span deficit %.3e "
+        "(1 - smallest cosine). The rotation is supposed to stay inside the "
+        "span." % worst
     )
     return znorm_rows(X), angle_true, W0
 

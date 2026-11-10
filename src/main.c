@@ -28,6 +28,11 @@
 // so at 0.3 it reflects roughly the last three. NOT a setting: it is internal
 // to the detector, and a knob here would only invite tuning it on one dataset
 #define RATE_BLEND 0.3
+// Ceiling on the freeze-ahead scale. A tiny theta_max would send the factor
+// to the moon, and past four the prediction is guesswork whatever the data
+// does. NOT a setting: freeze_ahead is the knob, this only stops it running
+// away when the denominator is small
+#define FREEZE_AHEAD_MAX 4.0
 
 // 20 short univariate series used as source patterns
 static const double demo_rows[DEMO_ROWS][DEMO_COLS] = {
@@ -63,39 +68,42 @@ static double now_seconds(void) {
 
 // Open a destination file, or hand back stdout for "-"; the flag tells the
 // caller whether it owns the handle and must close it
-static FILE* open_sink(const char* path, int* owned) {
+static FILE *open_sink(const char *path, int *owned) {
   *owned = 0;
-  if (strcmp(path, "-") == 0) return stdout;
-  FILE* f = fopen(path, "w");
-  if (f) *owned = 1;
+  if (strcmp(path, "-") == 0)
+    return stdout;
+  FILE *f = fopen(path, "w");
+  if (f)
+    *owned = 1;
   return f;
 }
 
 // Persist the frozen dictionary as data; an analysis script needs exactly this
 // to recompute distances without re-running the C
-static int write_dictionary(const char* path, const Config* cfg,
-                            const double* ev, const int* bits,
-                            const int* alphabet, const double* bkpt) {
-  FILE* f = fopen(path, "w");
+static int write_dictionary(const char *path, const Config *cfg,
+                            const double *ev, const int *bits,
+                            const int *alphabet, const double *bkpt) {
+  FILE *f = fopen(path, "w");
   if (!f) {
     fprintf(stderr, "Error: Cannot write dictionary to '%s'\n", path);
     return -1;
   }
 
   fprintf(f, "pos,alphabet,bits,ev");
-  for (int b = 0; b < MAX_ALPHABET; b++) fprintf(f, ",bkpt%d", b);
+  for (int b = 0; b < MAX_ALPHABET; b++)
+    fprintf(f, ",bkpt%d", b);
   fprintf(f, "\n");
 
   for (int j = 0; j < cfg->k; j++) {
     fprintf(f, "%d,%d,%d,%.17g", j, alphabet[j], bits[j], ev[j]);
     for (int b = 0; b < MAX_ALPHABET; b++) {
       double v =
-          bkpt[j * MAX_ALPHABET + b];  // Index flat breakpoint table using
-                                       // fixed MAX_ALPHABET row stride
+          bkpt[j * MAX_ALPHABET + b]; // Index flat breakpoint table using
+                                      // fixed MAX_ALPHABET row stride
       if (b >= alphabet[j])
-        fprintf(f, ",");  // slot unused at this position
+        fprintf(f, ","); // slot unused at this position
       else if (v == DBL_MAX)
-        fprintf(f, ",inf");  // the wall the symbol search always stops at
+        fprintf(f, ",inf"); // the wall the symbol search always stops at
       else
         fprintf(f, ",%.17g", v);
     }
@@ -106,7 +114,7 @@ static int write_dictionary(const char* path, const Config* cfg,
   return 0;
 }
 
-static int epoch_path(char* buf, size_t cap, const char* dir, const char* what,
+static int epoch_path(char *buf, size_t cap, const char *dir, const char *what,
                       long n) {
   int len = snprintf(buf, cap, "%s/%s_%ld.csv", dir, what, n);
   if (len < 0 || (size_t)len >= cap) {
@@ -120,8 +128,8 @@ static int epoch_path(char* buf, size_t cap, const char* dir, const char* what,
 /* Writes one basis to a CSV file: one row per direction, m numbers each.
  * Returns 0 on success, -1 if the file could not be opened.
  */
-static int write_basis(const char* path, const OjaPCA* p) {
-  FILE* f = fopen(path, "w");
+static int write_basis(const char *path, const OjaPCA *p) {
+  FILE *f = fopen(path, "w");
   if (!f) {
     fprintf(stderr, "Error: Cannot write basis to '%s'\n", path);
     return -1;
@@ -147,9 +155,9 @@ static int write_basis(const char* path, const OjaPCA* p) {
   return 0;
 }
 
-static int build_dictionary(const Config* cfg, double* proj, int n_proj,
-                            const char* why, int* perm, double* ev, int* bits,
-                            int* alphabet, double* bkpt, double* score) {
+static int build_dictionary(const Config *cfg, double *proj, int n_proj,
+                            const char *why, int *perm, double *ev, int *bits,
+                            int *alphabet, double *bkpt, double *score) {
   estimate_eigenvalues(proj, n_proj, cfg->k, ev);
 
   for (int i = 0; i < cfg->k; i++) {
@@ -160,9 +168,9 @@ static int build_dictionary(const Config* cfg, double* proj, int n_proj,
     int max_idx = i;
     for (int j = i + 1; j < cfg->k; j++) {
       if (ev[perm[j]] >
-          ev[perm[max_idx]]) {  // Indirect selection sort on index array perm
-                                // to rank eigenvalues descending without
-                                // mutating ev yet
+          ev[perm[max_idx]]) { // Indirect selection sort on index array perm
+                               // to rank eigenvalues descending without
+                               // mutating ev yet
         max_idx = j;
       }
     }
@@ -194,8 +202,8 @@ static int build_dictionary(const Config* cfg, double* proj, int n_proj,
       for (int i = 0; i < cfg->k; i++) {
         tmp_row[i] =
             proj[r * cfg->k +
-                 perm[i]];  // Gather column perm[i] into slot i via temporary
-                            // row buffer to avoid overwriting unvisited columns
+                 perm[i]]; // Gather column perm[i] into slot i via temporary
+                           // row buffer to avoid overwriting unvisited columns
       }
       for (int i = 0; i < cfg->k; i++) {
         proj[r * cfg->k + i] = tmp_row[i];
@@ -210,7 +218,8 @@ static int build_dictionary(const Config* cfg, double* proj, int n_proj,
                    &local_score) != 0) {
     return -1;
   }
-  if (score) *score = local_score;
+  if (score)
+    *score = local_score;
   // Step 3: clamp to what digitize can represent, and note the widest
   // alphabet, since that is the one that needs the most rows to resolve
   int max_a = 0;
@@ -238,16 +247,19 @@ static int build_dictionary(const Config* cfg, double* proj, int n_proj,
   compute_breakpoints(proj, n_proj, cfg->k, alphabet, bkpt);
   // Step 6: one log line, so both paths report identically
   fprintf(stderr, "ev       =");
-  for (int j = 0; j < cfg->k; j++) fprintf(stderr, " %.4f", ev[j]);
+  for (int j = 0; j < cfg->k; j++)
+    fprintf(stderr, " %.4f", ev[j]);
   fprintf(stderr, "\nbits     =");
-  for (int j = 0; j < cfg->k; j++) fprintf(stderr, " %d", bits[j]);
+  for (int j = 0; j < cfg->k; j++)
+    fprintf(stderr, " %d", bits[j]);
   fprintf(stderr, "\nalphabet =");
-  for (int j = 0; j < cfg->k; j++) fprintf(stderr, " %d", alphabet[j]);
+  for (int j = 0; j < cfg->k; j++)
+    fprintf(stderr, " %d", alphabet[j]);
   fprintf(stderr, "\nscore    = %.6f\n", local_score);
   return 0;
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   Config cfg;
   RunOptions run;
 
@@ -257,7 +269,8 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
   if (argc == 2) {
-    if (config_load(argv[1], &cfg, &run) != 0) return EXIT_FAILURE;
+    if (config_load(argv[1], &cfg, &run) != 0)
+      return EXIT_FAILURE;
   } else {
     config_defaults(&cfg, &run);
   }
@@ -268,23 +281,24 @@ int main(int argc, char* argv[]) {
 
   // Default exit code and safe initialization of pointers and state
   int rc = EXIT_FAILURE;
-  double* demo_flat = NULL;
-  double* win = NULL;
-  double* xc = NULL;
-  double* y = NULL;
-  double* y_cand = NULL;
-  int* word = NULL;
-  double* bkpt = NULL;
-  double* warmup_proj = NULL;
-  double* ev = NULL;
-  int* bits = NULL;
-  int* alphabet_arr = NULL;
-  double* ev_live = NULL;
-  double* angles_scratch = NULL;
-  double* angles = NULL;
-  int* perm = NULL;
-  FILE* out = NULL;
-  FILE* epochs_f = NULL;
+  double *demo_flat = NULL;
+  double *win = NULL;
+  double *xc = NULL;
+  double *y = NULL;
+  double *y_cand = NULL;
+  int *word = NULL;
+  double *bkpt = NULL;
+  double *warmup_proj = NULL;
+  double *ev = NULL;
+  int *bits = NULL;
+  int *alphabet_arr = NULL;
+  double *ev_live = NULL;
+  double *angles_scratch = NULL;
+  double *angles = NULL;
+  double *advance_scratch = NULL;
+  int *perm = NULL;
+  FILE *out = NULL;
+  FILE *epochs_f = NULL;
   int out_owned = 0;
 
   RunningMean my_stats = {0};
@@ -293,9 +307,9 @@ int main(int argc, char* argv[]) {
   OjaPCA oja_frozen = {0};
   OjaPCA oja_cand = {0};
 
-  const OjaPCA* symbol_basis =
-      &oja_avg;  // Read-only alias pointing to the active projection basis it
-                 // switches from oja_avg to oja_frozen after warmup
+  const OjaPCA *symbol_basis =
+      &oja_avg; // Read-only alias pointing to the active projection basis it
+                // switches from oja_avg to oja_frozen after warmup
   WindowStream stream = {0};
   ProjRing ring = {0};
   ProjRing cand_ring = {0};
@@ -314,6 +328,10 @@ int main(int argc, char* argv[]) {
   double theta_rate = 0.0; /* radians per window, smoothed */
   int have_rate = 0;
   double worst_rate = 0.0;
+  long epoch_start = 0; /* window the current epoch's basis took over at; the
+                           angles are measured against that basis, so they
+                           start at zero there. Used for the REPORTED
+                           per-plane rates, not for the warn: see below */
   int staging = 0;
   int cand_ready = 0;
   long n_epochs = 0;    /* re-basings so far; epoch 0 is the warm-up one */
@@ -343,17 +361,23 @@ int main(int argc, char* argv[]) {
   bits = calloc((size_t)cfg.k, sizeof(int));
   angles_scratch = calloc(
       (size_t)cfg.k * (size_t)(cfg.k + 1),
-      sizeof(double));  // Pre-allocate k*k cross-Gram matrix plus k singular
-                        // values in one contiguous block for subspace_angles
+      sizeof(double)); // Pre-allocate k*k cross-Gram matrix plus k singular
+                       // values in one contiguous block for subspace_angles
   angles = calloc((size_t)cfg.k, sizeof(double));
   perm = calloc((size_t)cfg.k, sizeof(int));
   alphabet_arr = calloc((size_t)cfg.k, sizeof(int));
   ev_live = calloc((size_t)cfg.k, sizeof(double));
-  if (use_demo) demo_flat = calloc(DEMO_LEN, sizeof(double));
+  advance_scratch =
+      calloc((size_t)(2 * cfg.k * cfg.k + cfg.k + 2 * cfg.m),
+             sizeof(double)); // Overlap table, accumulated Jacobi rotations and
+                              // cosines, plus one principal direction and its
+                              // partner, for subspace_advance
+  if (use_demo)
+    demo_flat = calloc(DEMO_LEN, sizeof(double));
 
   if (!win || !xc || !y || !y_cand || !word || !bkpt || !warmup_proj || !ev ||
       !bits || !ev_live || !alphabet_arr || !angles_scratch || !angles ||
-      !perm || (use_demo && !demo_flat)) {
+      !advance_scratch || !perm || (use_demo && !demo_flat)) {
     fprintf(stderr, "Error: Memory allocation failed\n");
     goto cleanup;
   }
@@ -365,9 +389,8 @@ int main(int argc, char* argv[]) {
   }
 
   if (oja_init(&oja_live, cfg.k, cfg.m) != 0) {
-    fprintf(stderr,
-            "Error: oja_init failed, components must not exceed "
-            "channels * window\n");
+    fprintf(stderr, "Error: oja_init failed, components must not exceed "
+                    "channels * window\n");
     goto cleanup;
   }
 
@@ -400,9 +423,9 @@ int main(int argc, char* argv[]) {
     const size_t block = DEMO_ROWS * DEMO_COLS;
     for (int rep = 0; rep < DEMO_REPEATS; rep++) {
       memcpy(demo_flat + rep * block, demo_rows,
-             block * sizeof(double));  // Tile static 2D demo_rows array into
-                                       // flat contiguous heap buffer via
-                                       // pointer offset rep * block
+             block * sizeof(double)); // Tile static 2D demo_rows array into
+                                      // flat contiguous heap buffer via
+                                      // pointer offset rep * block
     }
     if (stream_init_array(&stream, demo_flat, DEMO_LEN, cfg.d, cfg.m_time,
                           cfg.stride) != 0) {
@@ -425,7 +448,8 @@ int main(int argc, char* argv[]) {
   }
 
   fprintf(out, "window");
-  for (int j = 0; j < cfg.k; j++) fprintf(out, ",sym%d", j);
+  for (int j = 0; j < cfg.k; j++)
+    fprintf(out, ",sym%d", j);
   fprintf(out, "\n");
   // The epoch index, one line per epoch. Opened with "w" so every run starts
   // a clean file
@@ -451,7 +475,8 @@ int main(int argc, char* argv[]) {
     double t0 = now_seconds();
     int got = stream_next(&stream, win);
     t_io += now_seconds() - t0;
-    if (!got) break;
+    if (!got)
+      break;
 
     t0 = now_seconds();
     n_seen++;
@@ -459,8 +484,8 @@ int main(int argc, char* argv[]) {
     // Channel-wise z-score normalization
     for (int c = 0; c < cfg.d; c++) {
       znorm_row(&win[c * cfg.m_time],
-                cfg.m_time);  // Normalize each contiguous m_time channel slice
-                              // independently inside the Mode-1 unfolded window
+                cfg.m_time); // Normalize each contiguous m_time channel slice
+                             // independently inside the Mode-1 unfolded window
     }
 
     // Center window by removing the running streaming mean
@@ -485,8 +510,10 @@ int main(int argc, char* argv[]) {
     if (n_seen % cfg.gs_period == 0) {
       double d_err, l_err;
       oja_orthonormality_error(&oja_live, &d_err, &l_err);
-      if (d_err > worst_dot_seen) worst_dot_seen = d_err;
-      if (l_err > worst_len_seen) worst_len_seen = l_err;
+      if (d_err > worst_dot_seen)
+        worst_dot_seen = d_err;
+      if (l_err > worst_len_seen)
+        worst_len_seen = l_err;
 
       /* The guarantee is stated about the basis that WRITES, and that is now
          the smoothed one, so its drift is the number with meaning. The raw
@@ -494,8 +521,10 @@ int main(int argc, char* argv[]) {
        */
       double da_err, la_err;
       oja_orthonormality_error(&oja_avg, &da_err, &la_err);
-      if (da_err > worst_dot_avg) worst_dot_avg = da_err;
-      if (la_err > worst_len_avg) worst_len_avg = la_err;
+      if (da_err > worst_dot_avg)
+        worst_dot_avg = da_err;
+      if (la_err > worst_len_avg)
+        worst_len_avg = la_err;
 
       gram_schmidt(&oja_live);
       /* The average of unit vectors is not a unit vector and the average of
@@ -536,7 +565,8 @@ int main(int argc, char* argv[]) {
                   (1.0 - RATE_BLEND) * theta_rate + RATE_BLEND * sample;
             }
 
-            if (theta_rate > worst_rate) worst_rate = theta_rate;
+            if (theta_rate > worst_rate)
+              worst_rate = theta_rate;
           }
           theta_prev = theta_max;
           theta_prev_at = n_seen;
@@ -580,7 +610,43 @@ int main(int argc, char* argv[]) {
             staging = 1;
             fprintf(stderr, "warn,%ld,%.9f,%.9f,%.9f\n", n_seen - 1, theta_max,
                     travel, theta_noise);
-            int cand_rc = oja_copy_from(&oja_cand, &oja_avg);
+            /* The candidate. Plain, it is where the data is NOW, which is
+               already behind by the time it takes over: that gap is the
+               staleness the run reports, and inside the new epoch the angle
+               then runs all the way to the policy.
+               With freeze_ahead it is pushed further along the SAME motion,
+               so the epoch opens AHEAD of the data and the angle runs from
+               roughly minus half to plus half instead, which halves the
+               worst angle inside the epoch.
+                   f = (theta_max + freeze_ahead * threshold) / theta_max
+               A wrong prediction costs tightness and nothing else: the
+               bound is computed from the two real bases at translation time
+               and never reads this. */
+            int cand_rc;
+            double f = 0.0;
+            if (cfg.freeze_ahead > 0.0 && theta_max > SPARTAN_EPS) {
+              f = (theta_max + cfg.freeze_ahead * cfg.theta_threshold) /
+                  theta_max;
+              if (f > FREEZE_AHEAD_MAX)
+                f = FREEZE_AHEAD_MAX;
+            }
+            if (f > 1.0) {
+              cand_rc = subspace_advance(&oja_frozen, &oja_avg, f, &oja_cand,
+                                         advance_scratch);
+              if (cand_rc != 0) {
+                /* Predicting is optional, so a refusal falls back to the
+                   plain snapshot rather than stopping the run. */
+                fprintf(stderr,
+                        "Warning: subspace_advance returned '%d' at window "
+                        "'%ld', freezing where the data is instead\n",
+                        cand_rc, n_seen - 1);
+                cand_rc = oja_copy_from(&oja_cand, &oja_avg);
+              } else {
+                fprintf(stderr, "ahead,%ld,%.6f\n", n_seen - 1, f);
+              }
+            } else {
+              cand_rc = oja_copy_from(&oja_cand, &oja_avg);
+            }
             if (cand_rc != 0) {
               fprintf(
                   stderr,
@@ -595,7 +661,8 @@ int main(int argc, char* argv[]) {
           if (theta_max > cfg.theta_threshold) {
             if (was_below) {
               double over = theta_max - cfg.theta_threshold;
-              if (over > worst_over) worst_over = over;
+              if (over > worst_over)
+                worst_over = over;
             }
             was_below = 0;
 
@@ -609,12 +676,11 @@ int main(int argc, char* argv[]) {
               if (build_dictionary(&cfg, cand_ring.buf, cand_ring.count,
                                    "rebasis", perm, ev, bits, alphabet_arr,
                                    bkpt, &new_score) !=
-                  0)  // Pass flat ring buffer directly, column variance and
-                      // quantiles are invariant to circular row order
+                  0) // Pass flat ring buffer directly, column variance and
+                     // quantiles are invariant to circular row order
               {
-                fprintf(stderr,
-                        "Error: could not build candidate dictionary "
-                        "at re-basing\n");
+                fprintf(stderr, "Error: could not build candidate dictionary "
+                                "at re-basing\n");
                 t_algo += now_seconds() - t0;
                 goto cleanup;
               }
@@ -645,7 +711,8 @@ int main(int argc, char* argv[]) {
                         stale_rc, n_seen - 1);
                 staleness = 0.0;
               }
-              if (staleness > worst_stale) worst_stale = staleness;
+              if (staleness > worst_stale)
+                worst_stale = staleness;
               /* The dictionary is in sorted position order now, so the
    basis that will write has to agree: letter j and cut point
    row j must describe the same direction.
@@ -726,6 +793,8 @@ int main(int argc, char* argv[]) {
               staging = 0;
               cand_ready = 0;
               theta_prev_at = -1;
+              /* The angles restart against the basis that just took over. */
+              epoch_start = n_seen;
 
               n_epochs++;
               if (run.out_dir[0]) {
@@ -751,7 +820,8 @@ int main(int argc, char* argv[]) {
 
               if (late_since >= 0) {
                 long late = n_seen - late_since;
-                if (late > worst_late) worst_late = late;
+                if (late > worst_late)
+                  worst_late = late;
               }
               late_since = -1;
 
@@ -765,8 +835,24 @@ int main(int argc, char* argv[]) {
             late_since = -1;
           }
           fprintf(stderr, "angle,%ld,%.9f", n_seen - 1, theta_max);
-          for (int j = 0; j < cfg.k; j++) fprintf(stderr, ",%.9f", angles[j]);
-          fprintf(stderr, ",%.9f,%.9f\n", theta_noise, theta_rate);
+          for (int j = 0; j < cfg.k; j++)
+            fprintf(stderr, ",%.9f", angles[j]);
+          fprintf(stderr, ",%.9f,%.9f", theta_noise, theta_rate);
+          /* The k per-plane rates, in degrees per window, taken straight
+             from the displacement since the epoch opened rather than from a
+             difference of two readings. Measured, REPORTED, and deliberately
+             not fed to the warn above: an average over the whole epoch is
+             dominated by the fast start and fires the warning too early,
+             which was measured to make staleness worse. A single scalar also
+             hides which directions are moving and which stand still, and
+             that difference is what says whether the drift has a direction
+             worth predicting or is a random walk. */
+          long elapsed_ep = n_seen - epoch_start;
+          for (int j = 0; j < cfg.k; j++) {
+            double rj = (elapsed_ep > 0) ? angles[j] / (double)elapsed_ep : 0.0;
+            fprintf(stderr, ",%.9f", rj / SPARTAN_DEG_TO_RAD);
+          }
+          fprintf(stderr, "\n");
         }
       }
     }
@@ -790,8 +876,8 @@ int main(int argc, char* argv[]) {
     if (!have_bkpt) {
       for (int j = 0; j < cfg.k; j++) {
         warmup_proj[warm_count * cfg.k + j] =
-            y[j];  // Append k-dimensional projection into row warm_count of
-                   // flat warmup matrix
+            y[j]; // Append k-dimensional projection into row warm_count of
+                  // flat warmup matrix
       }
       warm_count++;
 
@@ -840,6 +926,8 @@ int main(int argc, char* argv[]) {
         }
         pring_reset(&ring);
         have_bkpt = 1;
+        /* Epoch 0 opens here. */
+        epoch_start = n_seen;
         free(warmup_proj);
         warmup_proj = NULL;
       }
@@ -851,7 +939,8 @@ int main(int argc, char* argv[]) {
     digitize(y, bkpt, cfg.k, alphabet_arr, word);
     n_words++;
 
-    if (n_seen % cfg.ring_w == 0) pring_refresh(&ring);
+    if (n_seen % cfg.ring_w == 0)
+      pring_refresh(&ring);
 
     if (ring.count == ring.cap) {
       pring_importances(&ring, ev_live);
@@ -928,8 +1017,10 @@ int main(int argc, char* argv[]) {
   rc = EXIT_SUCCESS;
 
 cleanup:
-  if (out && out_owned) fclose(out);
-  if (epochs_f) fclose(epochs_f);
+  if (out && out_owned)
+    fclose(out);
+  if (epochs_f)
+    fclose(epochs_f);
   free(demo_flat);
   free(win);
   free(xc);
@@ -944,6 +1035,7 @@ cleanup:
   free(alphabet_arr);
   free(angles_scratch);
   free(angles);
+  free(advance_scratch);
   free(perm);
   oja_free(&oja_live);
   oja_free(&oja_frozen);
