@@ -13,18 +13,18 @@
  *   make test_ring && ./test_ring
  */
 
-#include "spartan.h"
-
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "spartan.h"
+
 #define TOL 1e-9
 
 static int failures = 0;
 
-static void report(const char *name, int ok, const char *detail) {
+static void report(const char* name, int ok, const char* detail) {
   printf("%-44s %s", name, ok ? "pass" : "FAIL");
   if (detail && *detail) printf("   %s", detail);
   printf("\n");
@@ -44,7 +44,7 @@ static double next_unit(void) {
   return (double)((seed >> 11) & 0xFFFFFF) / 16777216.0;
 }
 
-static double max_abs_diff(const double *a, const double *b, int n) {
+static double max_abs_diff(const double* a, const double* b, int n) {
   double worst = 0.0;
   for (int i = 0; i < n; i++) {
     double d = fabs(a[i] - b[i]);
@@ -63,7 +63,10 @@ static double max_abs_diff(const double *a, const double *b, int n) {
 static void case_agreement(void) {
   const int cap = 7, k = 3;
   ProjRing r;
-  if (pring_init(&r, cap, k) != 0) { report("1  agreement with full recount", 0, "init failed"); return; }
+  if (pring_init(&r, cap, k) != 0) {
+    report("1  agreement with full recount", 0, "init failed");
+    return;
+  }
 
   double y[3], fast[3], slow[3];
   double worst = 0.0;
@@ -79,7 +82,8 @@ static void case_agreement(void) {
        read runs off the end of buf, so say so here rather than crash there. */
     if (r.count > r.cap || r.count < 1) {
       char bad[80];
-      snprintf(bad, sizeof bad, "count %d outside [1, %d] at push %d", r.count, r.cap, t);
+      snprintf(bad, sizeof bad, "count %d outside [1, %d] at push %d", r.count,
+               r.cap, t);
       report("1  agreement with full recount", 0, bad);
       pring_free(&r);
       return;
@@ -89,7 +93,10 @@ static void case_agreement(void) {
     estimate_eigenvalues(r.buf, r.count, r.k, slow);
 
     double d = max_abs_diff(fast, slow, k);
-    if (d > worst) { worst = d; worst_at = t; }
+    if (d > worst) {
+      worst = d;
+      worst_at = t;
+    }
   }
 
   char detail[96];
@@ -108,9 +115,15 @@ static void case_agreement(void) {
 static void case_saturation(void) {
   const int cap = 5, k = 1;
   ProjRing r;
-  if (pring_init(&r, cap, k) != 0) { report("2  counter saturates, last cap kept", 0, "init failed"); return; }
+  if (pring_init(&r, cap, k) != 0) {
+    report("2  counter saturates, last cap kept", 0, "init failed");
+    return;
+  }
 
-  for (int t = 0; t < 12; t++) { double v = (double)t; pring_push(&r, &v); }
+  for (int t = 0; t < 12; t++) {
+    double v = (double)t;
+    pring_push(&r, &v);
+  }
 
   int count_ok = (r.count == cap);
   int cursor_ok = (r.cursor >= 0 && r.cursor < cap);
@@ -122,7 +135,8 @@ static void case_saturation(void) {
     if (v >= 7 && v <= 11) found[v - 7] = 1;
   }
   int contents_ok = 1;
-  for (int i = 0; i < 5; i++) if (!found[i]) contents_ok = 0;
+  for (int i = 0; i < 5; i++)
+    if (!found[i]) contents_ok = 0;
 
   char detail[96];
   snprintf(detail, sizeof detail, "count %d cursor %d", r.count, r.cursor);
@@ -146,7 +160,10 @@ static void case_scale_invariance(void) {
   double y[4], y10[4], ea[4], eb[4];
   seed = 12345;
   for (int t = 0; t < 2 * cap; t++) {
-    for (int j = 0; j < k; j++) { y[j] = next_unit() - 0.5; y10[j] = y[j] * 10.0; }
+    for (int j = 0; j < k; j++) {
+      y[j] = next_unit() - 0.5;
+      y10[j] = y[j] * 10.0;
+    }
     pring_push(&a, y);
     pring_push(&b, y10);
   }
@@ -157,7 +174,8 @@ static void case_scale_invariance(void) {
   char detail[64];
   snprintf(detail, sizeof detail, "worst %.2e", d);
   report("3  importances ignore a uniform gain", d < 1e-12, detail);
-  pring_free(&a); pring_free(&b);
+  pring_free(&a);
+  pring_free(&b);
 }
 
 /* ------------------------------------------------------------------ */
@@ -178,10 +196,12 @@ static void case_constant(void) {
   estimate_eigenvalues(r.buf, r.count, r.k, slow);
 
   int uniform_ok = 1;
-  for (int j = 0; j < k; j++) if (fabs(fast[j] - 1.0 / k) > 1e-15) uniform_ok = 0;
+  for (int j = 0; j < k; j++)
+    if (fabs(fast[j] - 1.0 / k) > 1e-15) uniform_ok = 0;
 
   char detail[80];
-  snprintf(detail, sizeof detail, "ev0 %.6f, agrees %.1e", fast[0], max_abs_diff(fast, slow, k));
+  snprintf(detail, sizeof detail, "ev0 %.6f, agrees %.1e", fast[0],
+           max_abs_diff(fast, slow, k));
   report("4  constant signal gives uniform, same rule",
          uniform_ok && max_abs_diff(fast, slow, k) < 1e-15, detail);
   pring_free(&r);
@@ -201,7 +221,7 @@ static void case_empty(void) {
 
   int ok = 1;
   for (int j = 0; j < k; j++) {
-    if (!(ev[j] == ev[j])) ok = 0;              /* NaN */
+    if (!(ev[j] == ev[j])) ok = 0; /* NaN */
     if (fabs(ev[j] - 1.0 / k) > 1e-15) ok = 0;
   }
   char detail[64];
@@ -217,7 +237,10 @@ static void case_edges(void) {
 
   /* k = 1: one position carries everything, so its share is exactly one */
   pring_init(&r, 3, 1);
-  for (int t = 0; t < 7; t++) { double v = next_unit(); pring_push(&r, &v); }
+  for (int t = 0; t < 7; t++) {
+    double v = next_unit();
+    pring_push(&r, &v);
+  }
   double ev1[1];
   pring_importances(&r, ev1);
   int k1_ok = fabs(ev1[0] - 1.0) < 1e-15;
@@ -226,7 +249,11 @@ static void case_edges(void) {
   /* cap = 2: wraps on every other push */
   pring_init(&r, 2, 2);
   double y[2];
-  for (int t = 0; t < 9; t++) { y[0] = next_unit(); y[1] = next_unit(); pring_push(&r, y); }
+  for (int t = 0; t < 9; t++) {
+    y[0] = next_unit();
+    y[1] = next_unit();
+    pring_push(&r, y);
+  }
   double fast[2], slow[2];
   pring_importances(&r, fast);
   estimate_eigenvalues(r.buf, r.count, r.k, slow);
@@ -235,13 +262,21 @@ static void case_edges(void) {
 
   /* arguments the contract rejects */
   int reject_ok = 1;
-  if (pring_init(&r, 1, 3) == 0) { reject_ok = 0; pring_free(&r); }   /* cap below 2 */
-  if (pring_init(&r, 8, 0) == 0) { reject_ok = 0; pring_free(&r); }   /* k below 1  */
+  if (pring_init(&r, 1, 3) == 0) {
+    reject_ok = 0;
+    pring_free(&r);
+  } /* cap below 2 */
+  if (pring_init(&r, 8, 0) == 0) {
+    reject_ok = 0;
+    pring_free(&r);
+  } /* k below 1  */
   if (pring_init(NULL, 8, 3) == 0) reject_ok = 0;
 
   char detail[80];
-  snprintf(detail, sizeof detail, "k1 %d  cap2 %d  reject %d", k1_ok, cap2_ok, reject_ok);
-  report("6  k=1, cap=2, and rejected arguments", k1_ok && cap2_ok && reject_ok, detail);
+  snprintf(detail, sizeof detail, "k1 %d  cap2 %d  reject %d", k1_ok, cap2_ok,
+           reject_ok);
+  report("6  k=1, cap=2, and rejected arguments", k1_ok && cap2_ok && reject_ok,
+         detail);
 }
 
 /* ------------------------------------------------------------------ */
@@ -252,16 +287,17 @@ static void case_edges(void) {
 static void case_free_safety(void) {
   ProjRing zeroed;
   memset(&zeroed, 0, sizeof zeroed);
-  pring_free(&zeroed);          /* never initialised */
-  pring_free(&zeroed);          /* twice */
+  pring_free(&zeroed); /* never initialised */
+  pring_free(&zeroed); /* twice */
 
   ProjRing r;
   pring_init(&r, 4, 2);
   pring_free(&r);
-  pring_free(&r);               /* twice after a real init */
+  pring_free(&r); /* twice after a real init */
   pring_free(NULL);
 
-  report("7  free is safe on zeroed, twice, and NULL", 1, "no crash under asan");
+  report("7  free is safe on zeroed, twice, and NULL", 1,
+         "no crash under asan");
 }
 
 /* ------------------------------------------------------------------ */
@@ -272,8 +308,8 @@ static void case_free_safety(void) {
  * loses its digits. The hard failure is a negative variance; the drift itself
  * is reported so the number is visible rather than assumed.
  */
-static void drift_run(const char *tag, double offset, long pushes, int *neg_seen,
-                      double *rel_drift) {
+static void drift_run(const char* tag, double offset, long pushes,
+                      int* neg_seen, double* rel_drift) {
   const int cap = 900, k = 4;
   ProjRing r;
   pring_init(&r, cap, k);
@@ -319,7 +355,8 @@ static void case_long_run(void) {
   drift_run("values near 1e6", 1.0e6, pushes, &neg_b, &drift_b);
 
   char detail[96];
-  snprintf(detail, sizeof detail, "%ld pushes each, no negative variance", pushes);
+  snprintf(detail, sizeof detail, "%ld pushes each, no negative variance",
+           pushes);
   report("8  long run keeps variance non negative", !neg_a && !neg_b, detail);
 }
 
@@ -357,7 +394,8 @@ static void case_refresh_matches(void) {
   double idem = max_abs_diff(s1_once, r.s1, k) + max_abs_diff(s2_once, r.s2, k);
 
   char detail[96];
-  snprintf(detail, sizeof detail, "s1 %.1e  s2 %.1e  idempotent %.1e", d1, d2, idem);
+  snprintf(detail, sizeof detail, "s1 %.1e  s2 %.1e  idempotent %.1e", d1, d2,
+           idem);
   report("9  refresh matches push, and is idempotent",
          d1 < TOL && d2 < TOL && idem == 0.0, detail);
   pring_free(&r);
@@ -377,7 +415,7 @@ static void case_refresh_partial(void) {
 
   double y[2];
   seed = 4242;
-  for (int t = 0; t < 4; t++) {                 /* four of ten slots used */
+  for (int t = 0; t < 4; t++) { /* four of ten slots used */
     for (int j = 0; j < k; j++) y[j] = 5.0 + next_unit();
     pring_push(&r, y);
   }
@@ -389,7 +427,8 @@ static void case_refresh_partial(void) {
   pring_importances(&r, after);
 
   char detail[64];
-  snprintf(detail, sizeof detail, "count %d, worst %.1e", r.count, max_abs_diff(before, after, k));
+  snprintf(detail, sizeof detail, "count %d, worst %.1e", r.count,
+           max_abs_diff(before, after, k));
   report("10 refresh on a half filled ring",
          max_abs_diff(before, after, k) < TOL, detail);
   pring_free(&r);

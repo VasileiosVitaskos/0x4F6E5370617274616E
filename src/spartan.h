@@ -640,7 +640,7 @@ int daa_exact(int k, int total_bits, double lamda, const int* ref_bits);
  * @param score Optional output pointer to receive the objective of the
  * result (may be NULL).
  * @return 0 on success, or -1 on invalid inputs, a budget above
- * k * MAX_BITS, or settings outside daa_exact.
+ * k * MAX_BITS, settings outside daa_exact, or `ev` not descending.
  */
 int daa_allocate(const double* ev, int k, int total_bits, double lamda,
                  const int* ref_bits, int* bits, double* score);

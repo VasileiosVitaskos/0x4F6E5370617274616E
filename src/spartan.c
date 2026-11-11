@@ -1344,13 +1344,26 @@ int daa_exact(int k, int total_bits, double lamda, const int* ref_bits) {
  * score       output, daa_score of the result; may be NULL
  *
  * Returns 0, or -1 on a bad argument, a budget no split can spend
- * (above k * MAX_BITS), or settings outside daa_exact.
+ * (above k * MAX_BITS), settings outside daa_exact, or importances not in
+ * descending order.
+ *
+ * Edge cases:
+ *   Descending order is a PRECONDITION, checked rather than assumed: it is
+ *   what makes greedy keep the split non-increasing. On unsorted input
+ *   greedy returns the true optimum for that order, which is not
+ *   non-increasing, and the old dynamic program returned the best
+ *   non-increasing split instead, a different answer. build_dictionary
+ *   sorts first, so the pipeline never passes unsorted importances; equal
+ *   neighbours are fine.
  */
 int daa_allocate(const double* ev, int k, int total_bits, double lamda,
                  const int* ref_bits, int* bits, double* score) {
   if (!ev || !bits || k <= 0 || total_bits < 1 || total_bits > k * MAX_BITS ||
       !daa_exact(k, total_bits, lamda, ref_bits))
     return -1;
+  for (int j = 1; j < k; j++)
+    if (ev[j] > ev[j - 1])
+      return -1;  // not descending, see the edge cases above
   int avg_bit = total_bits / k;
 
   for (int j = 0; j < k; j++) bits[j] = 0;
