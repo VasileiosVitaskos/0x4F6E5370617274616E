@@ -10,7 +10,8 @@ number on this terminal can never drift apart.
 The distances are computed by THEIR code, loaded from their checkout, so the
 headline numbers are not something this script invented.
 
-Run tools/ref_spartan.py first, and the C with out_dir set, on the same cfg.
+Run the C first (with out_dir set: it writes settings.cfg there, which is
+where every setting of the run is read from), then tools/ref_spartan.py.
 
     python3 tools/compare_stages.py tests/synthetic/cfg/stream_ref.cfg \
             --spartan-repo ~/dev/SPARTAN-main --out out/stream_ref
@@ -36,18 +37,34 @@ WHAT IS IN THE CSVs
     conv_subspace.csv   pos, ev_online, ev_batch, bits_online, bits_batch
     epochs.csv          epoch, first_window, windows, angle_prev, angle_hind
     tlb_cdf.csv         tlb, frac_online, frac_batch, frac_hindsight,
-                        frac_stored
+                        frac_stored, frac_search
     tlb_summary.csv     method, mean, median, p10, zeros, violations
-    tlb_pairs.csv       kind, share, online, stored, hindsight
+                        (method: online, batch, hindsight, stored, search)
+    tlb_pairs.csv       kind, share, online, stored, hindsight, search
     pruning.csv         k, prune_online, prune_batch, prune_hindsight,
-                        prune_stored
+                        prune_stored, prune_search
     agreement.csv       k, overlap, overlap_hindsight
     scaling.csv         n, bytes_online, bytes_batch
 
-"batch" in a column name is always the warm-up reference and "hindsight" the
-one fitted on the scored windows; "stored" is our own bound when both windows
-exist only as words. The names that were there before the epochs were added
-mean what they meant, so tools/sweep.py reads the same columns as before.
+WHAT THE COLUMNS MEAN
+
+Our side, three ways of bounding a pair written in DIFFERENT epochs (inside
+one epoch all three are the same MINDIST):
+    search   the query window is in hand, as in a k-NN search. It is
+             projected again onto the OLDER window's basis and written as a
+             word of that epoch, then compared by the ordinary MINDIST. One
+             extra projection per older epoch, no slack.
+    box      the query's word is turned into a box, carried into the older
+             epoch by the epoch map, and the slack sin(theta) * r is taken
+             off, with r measured on the query window. CSV name: online.
+    join     the same, but both windows survive only as words, so r is
+             replaced by the largest it could be. A join over the archive.
+             CSV name: stored.
+The batch side, the authors' own code:
+    batch warm-up   fitted on the warm-up windows only. CSV name: batch.
+    batch all       fitted on every scored window, i.e. it has seen the whole
+                    stream in advance. No streaming method can have that, so
+                    it is the ceiling. CSV name: hindsight.
     scalars.tex         one \\newcommand per single number
 
 Every table is kept under a few hundred rows on purpose. PGFPlots is TeX: a
@@ -69,19 +86,22 @@ import numpy as np
 try:
     from scipy.stats import rankdata
 except ImportError:
-    sys.exit("needs scipy. Activate the virtualenv you installed their "
-             "requirements into.")
+    sys.exit(
+        "needs scipy. Activate the virtualenv you installed their requirements into."
+    )
 
-SPARTAN_EPS = 1e-12          # must match src/spartan.h
-TLB_SAMPLE = 1000            # windows drawn for the distance matrices
+# What follows are settings of the EVALUATION, not of the algorithm: how many
+# windows to sample, which neighbourhood sizes to score. The algorithm's own
+# settings and constants are read from the C's settings.cfg.
+TLB_SAMPLE = 1000  # windows drawn for the distance matrices
 TLB_SEED = 0
-TOP_K = 10                   # neighbourhood size for the headline overlap
-CDF_POINTS = 201             # rows in tlb_cdf.csv, grid over [0, 1]
+TOP_K = 10  # neighbourhood size for the headline overlap
+CDF_POINTS = 201  # rows in tlb_cdf.csv, grid over [0, 1]
 KNN_K = (1, 5, 10, 20, 50, 100)
-ANGLE_BINS = ((0, 10), (10, 20), (20, 45), (45, 90))   # degrees, (lo, hi]
-MAX_SKEW_S = 1800            # how far apart the inputs of one run may be
+ANGLE_BINS = ((0, 10), (10, 20), (20, 45), (45, 90))  # degrees, (lo, hi]
+MAX_SKEW_S = 1800  # how far apart the inputs of one run may be
 BYTES_PER_DOUBLE = 8
-MAX_ALPHABET = 16            # must match src/spartan.h:20
+EUCLID_ROWS = 100  # rows per block of the true distances, see euclid_blocks
 
 
 # --------------------------------------------------------------------------
@@ -103,8 +123,7 @@ def load_their_distances(repo):
     root = os.path.expanduser(repo)
     src = os.path.join(root, "benchmark", "util", "distance_vectorized.py")
     if not os.path.exists(src):
-        alt = os.path.join(root, "TSB_Symbolic", "util",
-                           "distance_vectorized.py")
+        alt = os.path.join(root, "TSB_Symbolic", "util", "distance_vectorized.py")
         src = alt if os.path.exists(alt) else src
     if not os.path.exists(src):
         sys.exit("cannot find distance_vectorized.py under %s" % root)
@@ -114,27 +133,7 @@ def load_their_distances(repo):
     return mod
 
 
-def read_cfg(path):
-    cfg = {}
-    with open(path) as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
-            k, v = line.split("=", 1)
-            cfg[k.strip()] = v.strip()
-    return cfg
-
-
-def geometry(cfg):
-    g = dict(input=cfg["input"], out_dir=cfg["out_dir"],
-             d=int(cfg.get("channels", 1)), m_time=int(cfg["window"]),
-             k=int(cfg["components"]), warmup=int(cfg["warmup"]),
-             ring_w=int(cfg.get("ring_window", 0)))
-    g["stride"] = int(cfg.get("stride", g["m_time"]))
-    g["total_bits"] = int(cfg.get("total_bits", 2 * g["k"]))
-    g["m"] = g["d"] * g["m_time"]
-    return g
+from read_settings import geometry
 
 
 def read_windows(path, d, m_time, stride):
@@ -148,20 +147,23 @@ def read_windows(path, d, m_time, stride):
             vals.extend(float(x) for x in s.replace(",", " ").split())
     flat = np.asarray(vals, dtype=float)
     if len(flat) % d != 0:
-        sys.exit("%s: %d numbers is not a multiple of channels = %d"
-                 % (path, len(flat), d))
+        sys.exit(
+            "%s: %d numbers is not a multiple of channels = %d" % (path, len(flat), d)
+        )
     frames = flat.reshape(-1, d)
     if len(frames) < m_time:
-        sys.exit("%s: %d frames is shorter than one window of %d"
-                 % (path, len(frames), m_time))
+        sys.exit(
+            "%s: %d frames is shorter than one window of %d"
+            % (path, len(frames), m_time)
+        )
     n_win = 1 + (len(frames) - m_time) // stride
     out = np.empty((n_win, d * m_time))
     for w in range(n_win):
-        out[w] = frames[w * stride: w * stride + m_time].T.reshape(-1)
+        out[w] = frames[w * stride : w * stride + m_time].T.reshape(-1)
     return out
 
 
-def znorm_rows(X, d):
+def znorm_rows(X, d, eps):
     """z-norm PER CHANNEL, the way main.c:366-368 does it.
 
     The C loops the channels and calls znorm_row on each m_time slice, so
@@ -182,7 +184,7 @@ def znorm_rows(X, d):
     """
     B = X.reshape(len(X), d, -1)
     mu = B.mean(axis=2, keepdims=True)
-    sd = np.sqrt(((B - mu) ** 2).mean(axis=2, keepdims=True)) + SPARTAN_EPS
+    sd = np.sqrt(((B - mu) ** 2).mean(axis=2, keepdims=True)) + eps
     return ((B - mu) / sd).reshape(len(X), -1)
 
 
@@ -199,8 +201,10 @@ def read_our_dict(path, k):
     names = list(rows[0].keys())
     for want in ("ev", "bits", "alphabet"):
         if want not in names:
-            sys.exit("%s has no column '%s'. Columns are: %s"
-                     % (path, want, ", ".join(names)))
+            sys.exit(
+                "%s has no column '%s'. Columns are: %s"
+                % (path, want, ", ".join(names))
+            )
     n_bkpt = sum(1 for c in names if c.startswith("bkpt"))
 
     ev, bits, alpha, bkpt = [], [], [], []
@@ -264,9 +268,10 @@ def refuse_stale(paths, skew):
     """
     missing = [(lab, p) for lab, p in paths if not os.path.exists(p)]
     if missing:
-        sys.exit("missing input, so an earlier step of the pipeline did not "
-                 "finish:\n" + "\n".join("  %-26s %s" % (lab, p)
-                                         for lab, p in missing))
+        sys.exit(
+            "missing input, so an earlier step of the pipeline did not "
+            "finish:\n" + "\n".join("  %-26s %s" % (lab, p) for lab, p in missing)
+        )
     seen = [(lab, p, os.path.getmtime(p)) for lab, p in paths]
     newest = max(t for _, _, t in seen)
     stale = [(lab, p, newest - t) for lab, p, t in seen if newest - t > skew]
@@ -274,12 +279,15 @@ def refuse_stale(paths, skew):
         sys.exit(
             "these inputs are older than the newest one by more than %d s, "
             "so they are\nleft over from an earlier run and comparing them "
-            "would mix two runs:\n" % skew
-            + "\n".join("  %-26s %7.0f s older   %s" % (lab, age, p)
-                        for lab, p, age in stale)
+            "would mix two runs:\n"
+            % skew
+            + "\n".join(
+                "  %-26s %7.0f s older   %s" % (lab, age, p) for lab, p, age in stale
+            )
             + "\n\nRe-run the whole pipeline for this cfg. If a step failed, "
-              "read the log\nfrom the top: the error is there, not at the "
-              "end.")
+            "read the log\nfrom the top: the error is there, not at the "
+            "end."
+        )
 
 
 def read_epochs(out_dir):
@@ -295,10 +303,14 @@ def read_epochs(out_dir):
     out = []
     with open(p, newline="") as f:
         for r in csv.DictReader(f):
-            out.append(dict(epoch=int(r["epoch"]),
-                            first=int(r["first_window"]),
-                            theta_cut=float(r["theta_cut_rad"]),
-                            staleness=float(r["staleness_rad"])))
+            out.append(
+                dict(
+                    epoch=int(r["epoch"]),
+                    first=int(r["first_window"]),
+                    theta_cut=float(r["theta_cut_rad"]),
+                    staleness=float(r["staleness_rad"]),
+                )
+            )
     if not out:
         sys.exit("%s has no epochs: the run never left the warm-up" % p)
     if [e["epoch"] for e in out] != list(range(len(out))):
@@ -325,8 +337,7 @@ def digitize(Y, bkpt, alphabet):
     """
     out = np.empty(Y.shape, dtype=int)
     for j, (cuts, a) in enumerate(zip(bkpt, alphabet)):
-        out[:, j] = np.searchsorted(np.asarray(cuts[:a - 1]), Y[:, j],
-                                    side="left")
+        out[:, j] = np.searchsorted(np.asarray(cuts[: a - 1]), Y[:, j], side="left")
     return out
 
 
@@ -338,23 +349,26 @@ def word_box(words, bkpt, alphabet, x_max):
     hi = np.empty((n, k))
     for j, (cuts, a) in enumerate(zip(bkpt, alphabet)):
         # edges[s] is the low end of cell s, edges[s+1] its high end
-        edges = np.concatenate(([-x_max],
-                                np.clip(np.asarray(cuts[:a - 1], dtype=float),
-                                        -x_max, x_max),
-                                [x_max]))
+        edges = np.concatenate(
+            (
+                [-x_max],
+                np.clip(np.asarray(cuts[: a - 1], dtype=float), -x_max, x_max),
+                [x_max],
+            )
+        )
         lo[:, j] = edges[words[:, j]]
         hi[:, j] = edges[words[:, j] + 1]
     return lo, hi
 
 
-def epoch_map(B_to, B_from):
+def epoch_map(B_to, B_from, eps):
     """spartan.c epoch_map: the k x k table that carries coordinates of the
     FROM epoch into the TO epoch, and the sine of the largest angle between
     the two subspaces. Returns (None, None) where the C returns -3, a pair
     of epochs at 90 degrees that cannot be translated."""
     M = B_to @ B_from.T
     s_min = float(np.clip(np.linalg.svd(M, compute_uv=False), 0.0, 1.0).min())
-    if s_min < SPARTAN_EPS:
+    if s_min < eps:
         return None, None
     return M, math.sqrt(1.0 - s_min * s_min)
 
@@ -377,10 +391,10 @@ def box_gaps(q_lo, q_hi, c_lo, c_hi):
     return np.sqrt((gap * gap).sum(axis=2))
 
 
-def residual_exact(xc, Y):
+def residual_exact(x, Y):
     """spartan.c residual_len with the window in hand: the length of the part
-    of the centred window its own basis did not capture."""
-    d = (xc * xc).sum(axis=1) - (Y * Y).sum(axis=1)
+    of the window its own basis did not capture."""
+    d = (x * x).sum(axis=1) - (Y * Y).sum(axis=1)
     return np.sqrt(np.maximum(d, 0.0))
 
 
@@ -393,8 +407,7 @@ def residual_worst(lo, hi, x_max):
     much is known to have been captured and is taken off. Still an
     over-estimate of r, which is the direction that keeps the bound valid.
     """
-    near = np.where((lo <= 0.0) & (hi >= 0.0), 0.0,
-                    np.minimum(np.abs(lo), np.abs(hi)))
+    near = np.where((lo <= 0.0) & (hi >= 0.0), 0.0, np.minimum(np.abs(lo), np.abs(hi)))
     d = x_max * x_max - (near * near).sum(axis=1)
     return np.sqrt(np.maximum(d, 0.0))
 
@@ -453,13 +466,11 @@ def write_scalars(path, pairs, prefix=""):
     \\streamthetamax, \\stationarythetamax and so on.
     """
     if prefix and not prefix.isalpha():
-        sys.exit("--tex-prefix %r must be letters only; TeX will reject it"
-                 % prefix)
+        sys.exit("--tex-prefix %r must be letters only; TeX will reject it" % prefix)
     out = [(prefix + name, val) for name, val in pairs]
     for name, _ in out:
         if not name.isalpha():
-            sys.exit("scalar name %r is not letters only; TeX will reject it"
-                     % name)
+            sys.exit("scalar name %r is not letters only; TeX will reject it" % name)
     with open(path, "w") as f:
         f.write("%% written by tools/compare_stages.py, do not edit\n")
         for name, val in out:
@@ -485,21 +496,23 @@ def to_mindist_breakpoints(bkpt, alphabet):
     """
     out = []
     for j, (cuts, a) in enumerate(zip(bkpt, alphabet)):
-        inner = list(cuts[:a - 1])
+        inner = list(cuts[: a - 1])
         # An alphabet of a needs exactly a-1 internal cuts. Fewer means
         # dict_0.csv has fewer bkpt columns than this alphabet requires, and
         # the short row that would result is read by THEIR mindist as if it
         # were full: it indexes bkpt[sym] directly, so the distances come out
         # wrong rather than the program coming out broken.
         if len(inner) != a - 1:
-            sys.exit("dict_0.csv position %d: alphabet %d needs %d cut "
-                     "points but only %d were written. Does the C export "
-                     "enough bkpt columns for MAX_ALPHABET?"
-                     % (j, a, a - 1, len(inner)))
+            sys.exit(
+                "dict_0.csv position %d: alphabet %d needs %d cut "
+                "points but only %d were written. Does the C export "
+                "enough bkpt columns for MAX_ALPHABET?" % (j, a, a - 1, len(inner))
+            )
         if not all(np.isfinite(v) for v in inner):
-            sys.exit("dict_0.csv position %d: a cut point is nan or inf. "
-                     "Only the sentinel past the last cell may be infinite."
-                     % j)
+            sys.exit(
+                "dict_0.csv position %d: a cut point is nan or inf. "
+                "Only the sentinel past the last cell may be infinite." % j
+            )
         row = [-sys.float_info.max] + inner + [sys.float_info.max]
         out.append(np.asarray(row, dtype=float))
     return out
@@ -601,7 +614,7 @@ def rank_agreement(A, B):
     ra = ra - ra.mean(axis=1, keepdims=True)
     rb = rb - rb.mean(axis=1, keepdims=True)
     num = (ra * rb).sum(axis=1)
-    den = np.sqrt((ra ** 2).sum(axis=1) * (rb ** 2).sum(axis=1))
+    den = np.sqrt((ra**2).sum(axis=1) * (rb**2).sum(axis=1))
     with np.errstate(divide="ignore", invalid="ignore"):
         r = np.where(den > 0, num / den, 1.0)
     return float(np.mean(r))
@@ -655,20 +668,23 @@ def pruning_power(md, euclid, kk):
     for k in kk:
         if k >= n:
             continue
-        r = np.partition(e, k - 1, axis=1)[:, k - 1]      # k-th nearest, true
+        r = np.partition(e, k - 1, axis=1)[:, k - 1]  # k-th nearest, true
         pruned = (m > r[:, None]).sum(axis=1)
         out[k] = float(np.mean(pruned)) / (n - 1)
     return out
 
 
-def state_bytes_online(k, m, ring_w):
+def state_bytes_online(k, m, ring_w, max_alphabet):
     """Bytes the streaming side holds while it runs, whatever the stream
     length. Counted from what main.c allocates:
 
-        4 bases of k x m          live, averaged, frozen, candidate
-        2 rings of ring_w x k     the writing epoch's and the candidate's,
-                                  each with 2k running sums
-        3 vectors of m            running mean, the window, its centred copy
+        4 bases of k x m          live, averaged, frozen, the one being built
+        1 ring of ring_w x m      the last windows themselves; a re-basing
+                                  is PCA on them
+        2 rings of ring_w x k     projections for the type 1 test, and the
+                                  re-basing's projections, each with 2k sums
+        3 vectors of m            running mean, the window, its centred
+                                  copy (Oja's input only)
         the cut points            k x MAX_ALPHABET
         two scratch blocks        2k^2 + k for the angles,
                                   2k^2 + k + 2m for subspace_advance
@@ -679,17 +695,23 @@ def state_bytes_online(k, m, ring_w):
     include the input buffer and the allocator's slack, which are not the
     algorithm.
     """
-    doubles = (4 * k * m + 2 * (ring_w * k + 2 * k) + 3 * m
-               + k * MAX_ALPHABET + (2 * k * k + k)
-               + (2 * k * k + k + 2 * m))
+    doubles = (
+        4 * k * m
+        + ring_w * m
+        + 2 * (ring_w * k + 2 * k)
+        + 3 * m
+        + k * max_alphabet
+        + (2 * k * k + k)
+        + (2 * k * k + k + 2 * m)
+    )
     return BYTES_PER_DOUBLE * doubles
 
 
-def epoch_bytes(k, m):
+def epoch_bytes(k, m, max_alphabet):
     """Bytes ONE closed epoch leaves behind: its basis and its cut points.
     This is the only thing that grows, and it grows with the number of
     epochs, not with the number of windows."""
-    return BYTES_PER_DOUBLE * (k * m + k * MAX_ALPHABET)
+    return BYTES_PER_DOUBLE * (k * m + k * max_alphabet)
 
 
 def state_bytes_batch(n, m):
@@ -718,16 +740,18 @@ def fmt(vals, f="%8.4f"):
     return " ".join(f % v for v in vals)
 
 
-def online_distances(dist, take_idx, wo, ep_of, eps, Z, xc, m):
+def online_distances(dist, take_idx, wo, ep_of, eps, Z, x, m, tiny):
     """Our lower bound for every ordered pair of the sampled windows.
 
     take_idx   window index of each sampled window, increasing
     wo         their words, (n, k)
     ep_of      the epoch that wrote each, (n,)
     eps        per-epoch dicts with basis, bkpt, alpha, mdb
-    xc         the centred windows the C projected, (n, m)
+    x          the windows as the C projected them, z-normed and nothing
+               subtracted, (n, m)
+    tiny       SPARTAN_EPS, below which epoch_map calls a pair untranslatable
 
-    Returns (md_live, md_stored, apart, skipped).
+    Returns (md_search, md_live, md_stored, apart, skipped).
 
     Same epoch: the authors' spartan_pca_mindist through that epoch's cut
     points, identical in both matrices.
@@ -753,7 +777,10 @@ def online_distances(dist, take_idx, wo, ep_of, eps, Z, xc, m):
     is always valid and never prunes.
     """
     n = len(take_idx)
-    x_max = 2.0 * math.sqrt(m)
+    # a z-normed window has length at most sqrt(m) and nothing is
+    # subtracted before projecting (spartan.c word_box)
+    x_max = math.sqrt(m)
+    search = np.zeros((n, n))
     live = np.zeros((n, n))
     stored = np.zeros((n, n))
     apart = np.zeros((n, n))
@@ -767,18 +794,19 @@ def online_distances(dist, take_idx, wo, ep_of, eps, Z, xc, m):
         E = eps[e]
         lo, hi = word_box(wo[ix], E["bkpt"], E["alpha"], x_max)
         box[e] = (lo, hi)
-        r_live[e] = residual_exact(xc[ix], xc[ix] @ E["basis"].T)
+        r_live[e] = residual_exact(x[ix], x[ix] @ E["basis"].T)
         r_worst[e] = residual_worst(lo, hi, x_max)
 
         same = dist.spartan_pca_mindist(wo[ix], wo[ix], E["mdb"])
+        search[np.ix_(ix, ix)] = same
         live[np.ix_(ix, ix)] = same
         stored[np.ix_(ix, ix)] = same
 
-    for eq, iq in rows.items():              # the query's epoch, the later
-        for ec, ic in rows.items():          # the candidate's, the earlier
+    for eq, iq in rows.items():  # the query's epoch, the later
+        for ec, ic in rows.items():  # the candidate's, the earlier
             if ec >= eq:
                 continue
-            M, sin_t = epoch_map(eps[ec]["basis"], eps[eq]["basis"])
+            M, sin_t = epoch_map(eps[ec]["basis"], eps[eq]["basis"], tiny)
             if M is None:
                 skipped += 2 * len(iq) * len(ic)
                 apart[np.ix_(iq, ic)] = -1.0
@@ -795,7 +823,28 @@ def online_distances(dist, take_idx, wo, ep_of, eps, Z, xc, m):
             live[np.ix_(ic, iq)] = a.T
             stored[np.ix_(iq, ic)] = b
             stored[np.ix_(ic, iq)] = b.T
-    return live, stored, apart, skipped
+
+            # search: the query window is projected onto the candidate's
+            # basis and cut with the candidate's dictionary, so both words
+            # are in one epoch and the ordinary MINDIST applies
+            Ec = eps[ec]
+            wq = digitize(x[iq] @ Ec["basis"].T, Ec["bkpt"], Ec["alpha"])
+            c = dist.spartan_pca_mindist(wq, wo[ic], Ec["mdb"])
+            search[np.ix_(iq, ic)] = c
+            search[np.ix_(ic, iq)] = c.T
+    return search, live, stored, apart, skipped
+
+
+def euclid_blocks(dist, X, rows=EUCLID_ROWS):
+    """Their euclidean_vectorized, called on blocks of rows.
+
+    Theirs forms an n x n x m array in one go: 3.8 GB at n = 1000, m = 512,
+    which killed the run. Each block is computed by their own function, so
+    every distance is the same arithmetic on the same numbers.
+    """
+    return np.vstack(
+        [dist.euclidean_vectorized(X[i : i + rows], X) for i in range(0, len(X), rows)]
+    )
 
 
 def load_reference(ref_dir, name, suffix):
@@ -805,68 +854,101 @@ def load_reference(ref_dir, name, suffix):
         j = json.load(f)
     stem = name if suffix == "ref" else name + "." + suffix
     widx, words = read_words(os.path.join(ref_dir, stem + ".words.csv"))
-    return dict(ev=np.asarray(j["ev"]), bits=list(j["bits"]),
-                basis=np.asarray(j["directions"]),
-                mdb=[np.asarray(b) for b in j["mindist_breakpoints"]],
-                widx=widx, words=words, fit=j.get("fit_windows"))
+    return dict(
+        ev=np.asarray(j["ev"]),
+        bits=list(j["bits"]),
+        basis=np.asarray(j["directions"]),
+        mdb=[np.asarray(b) for b in j["mindist_breakpoints"]],
+        widx=widx,
+        words=words,
+        fit=j.get("fit_windows"),
+    )
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("cfg")
     ap.add_argument("--spartan-repo", required=True)
-    ap.add_argument("--out", required=True,
-                    help="directory for the CSVs the paper reads")
-    ap.add_argument("--ref-dir", default=None,
-                    help="where ref_spartan.py wrote its words and json. "
-                         "Must match the --out-dir it was given. Defaults to "
-                         "a 'ref' folder beside the data.")
+    ap.add_argument(
+        "--out", required=True, help="directory for the CSVs the paper reads"
+    )
+    ap.add_argument(
+        "--ref-dir",
+        default=None,
+        help="where ref_spartan.py wrote its words and json. "
+        "Must match the --out-dir it was given. Defaults to "
+        "a 'ref' folder beside the data.",
+    )
     ap.add_argument("--sample", type=int, default=TLB_SAMPLE)
-    ap.add_argument("--seed", type=int, default=TLB_SEED,
-                    help="which windows the distance matrices are drawn "
-                         "from. Every run uses the same seed by default so "
-                         "two configurations are compared on identical "
-                         "windows. Change it to find out how much of a "
-                         "difference between runs is just the draw.")
-    ap.add_argument("--max-skew", type=int, default=MAX_SKEW_S,
-                    help="seconds an input may lag behind the newest one "
-                         "before it is treated as left over from an earlier "
-                         "run (default %d)" % MAX_SKEW_S)
-    ap.add_argument("--tex-prefix", default="",
-                    help="letters-only prefix for the macro names in "
-                         "scalars.tex, so several datasets can be \\input "
-                         "into the same document without clashing")
-    ap.add_argument("--diagnostics", action="store_true",
-                    help="also print the arrow-by-arrow alignment and the "
-                         "breakpoints of epoch 0 against the warm-up "
-                         "reference, which are debugging aids and not in "
-                         "the paper")
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=TLB_SEED,
+        help="which windows the distance matrices are drawn "
+        "from. Every run uses the same seed by default so "
+        "two configurations are compared on identical "
+        "windows. Change it to find out how much of a "
+        "difference between runs is just the draw.",
+    )
+    ap.add_argument(
+        "--max-skew",
+        type=int,
+        default=MAX_SKEW_S,
+        help="seconds an input may lag behind the newest one "
+        "before it is treated as left over from an earlier "
+        "run (default %d)" % MAX_SKEW_S,
+    )
+    ap.add_argument(
+        "--tex-prefix",
+        default="",
+        help="letters-only prefix for the macro names in "
+        "scalars.tex, so several datasets can be \\input "
+        "into the same document without clashing",
+    )
+    ap.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="also print the arrow-by-arrow alignment and the "
+        "breakpoints of epoch 0 against the warm-up "
+        "reference, which are debugging aids and not in "
+        "the paper",
+    )
     args = ap.parse_args()
 
-    g = geometry(read_cfg(args.cfg))
+    g = geometry(args.cfg)
     k, m = g["k"], g["m"]
     dist = load_their_distances(args.spartan_repo)
     os.makedirs(args.out, exist_ok=True)
 
     name = os.path.splitext(os.path.basename(g["input"]))[0]
     ref_dir = args.ref_dir or os.path.join(
-        os.path.dirname(os.path.dirname(g["input"])), "ref")
+        os.path.dirname(os.path.dirname(g["input"])), "ref"
+    )
 
     epochs = read_epochs(g["out_dir"])
     ne = len(epochs)
 
-    inputs = [("our words.csv", os.path.join(g["out_dir"], "words.csv")),
-              ("our epochs.csv", os.path.join(g["out_dir"], "epochs.csv"))]
+    inputs = [
+        ("our words.csv", os.path.join(g["out_dir"], "words.csv")),
+        ("our epochs.csv", os.path.join(g["out_dir"], "epochs.csv")),
+    ]
     for e in range(ne):
-        inputs.append(("our dict_%d.csv" % e,
-                       os.path.join(g["out_dir"], "dict_%d.csv" % e)))
-        inputs.append(("our basis_%d.csv" % e,
-                       os.path.join(g["out_dir"], "basis_%d.csv" % e)))
+        inputs.append(
+            ("our dict_%d.csv" % e, os.path.join(g["out_dir"], "dict_%d.csv" % e))
+        )
+        inputs.append(
+            ("our basis_%d.csv" % e, os.path.join(g["out_dir"], "basis_%d.csv" % e))
+        )
     for suffix, stem in (("ref", name), ("hindsight", name + ".hindsight")):
-        inputs.append(("reference %s.json" % suffix,
-                       os.path.join(ref_dir, "%s.%s.json" % (name, suffix))))
-        inputs.append(("reference %s words" % suffix,
-                       os.path.join(ref_dir, stem + ".words.csv")))
+        inputs.append(
+            (
+                "reference %s.json" % suffix,
+                os.path.join(ref_dir, "%s.%s.json" % (name, suffix)),
+            )
+        )
+        inputs.append(
+            ("reference %s words" % suffix, os.path.join(ref_dir, stem + ".words.csv"))
+        )
     refuse_stale(inputs, args.max_skew)
 
     # ------------------------------------------------------------ loading
@@ -880,14 +962,21 @@ def main():
         # wrong number of cut points and produce plausible wrong distances.
         for j, (b, a) in enumerate(zip(bits, alpha)):
             if a != (1 << b):
-                sys.exit("%s position %d: alphabet %d is not 2^%d. The two "
-                         "must agree or every distance through this "
-                         "dictionary is wrong." % (dpath, j, a, b))
-        eps.append(dict(
-            ev=ev, bits=bits, alpha=alpha, bkpt=bkpt,
-            basis=read_our_basis(os.path.join(g["out_dir"],
-                                              "basis_%d.csv" % e)),
-            mdb=to_mindist_breakpoints(bkpt, alpha)))
+                sys.exit(
+                    "%s position %d: alphabet %d is not 2^%d. The two "
+                    "must agree or every distance through this "
+                    "dictionary is wrong." % (dpath, j, a, b)
+                )
+        eps.append(
+            dict(
+                ev=ev,
+                bits=bits,
+                alpha=alpha,
+                bkpt=bkpt,
+                basis=read_our_basis(os.path.join(g["out_dir"], "basis_%d.csv" % e)),
+                mdb=to_mindist_breakpoints(bkpt, alpha),
+            )
+        )
 
     widx_o, words_o = read_words(os.path.join(g["out_dir"], "words.csv"))
     warm = load_reference(ref_dir, name, "ref")
@@ -898,39 +987,36 @@ def main():
     # every file is in increasing window order. Checked rather than assumed,
     # because if it ever stops holding every word pairs with the wrong window
     # and the only symptom is a worse TLB with no error anywhere.
-    for who, idx in (("ours", widx_o), ("the warm-up reference", warm["widx"]),
-                     ("the hindsight reference", hind["widx"])):
+    for who, idx in (
+        ("ours", widx_o),
+        ("the warm-up reference", warm["widx"]),
+        ("the hindsight reference", hind["widx"]),
+    ):
         if not np.all(np.diff(idx) > 0):
-            sys.exit("the words file from %s is not in strictly increasing "
-                     "window order, so words cannot be matched to windows"
-                     % who)
+            sys.exit(
+                "the words file from %s is not in strictly increasing "
+                "window order, so words cannot be matched to windows" % who
+            )
 
-    common = np.intersect1d(np.intersect1d(widx_o, warm["widx"]),
-                            hind["widx"])
+    common = np.intersect1d(np.intersect1d(widx_o, warm["widx"]), hind["widx"])
     if len(common) == 0:
         sys.exit("the three sides wrote words for no window in common")
     wo = words_o[np.isin(widx_o, common)]
     ww = warm["words"][np.isin(warm["widx"], common)]
     wh = hind["words"][np.isin(hind["widx"], common)]
 
-    Z = znorm_rows(read_windows(g["input"], g["d"], g["m_time"], g["stride"]),
-                   g["d"])
+    Z = znorm_rows(
+        read_windows(g["input"], g["d"], g["m_time"], g["stride"]), g["d"], g["eps"]
+    )
     n_total = len(Z)
-
-    # The C does not project the window, it projects the window minus the
-    # running mean of everything seen so far (main.c:492-495, rmean_update is
-    # a plain cumulative mean). Rebuilt here for two reasons: the exact
-    # residual needs the same centred window the C had, and it lets the
-    # words be RE-DERIVED from the raw data as a check on everything read.
-    mu = np.cumsum(Z, axis=0) / np.arange(1, n_total + 1)[:, None]
 
     firsts = np.array([e["first"] for e in epochs])
     ep_common = np.searchsorted(firsts, common, side="right") - 1
     if ep_common.min() < 0:
-        sys.exit("a word was written before epoch 0 opened at window %d"
-                 % firsts[0])
+        sys.exit("a word was written before epoch 0 opened at window %d" % firsts[0])
 
-    # Re-derive every word: project the centred window on its epoch's basis,
+    # Re-derive every word: project the z-normed window, nothing subtracted
+    # (main.c, project(symbol_basis, win, y)), on its epoch's basis,
     # cut with its epoch's dictionary, compare with what the C wrote. One
     # mismatch means this script and the C disagree about which epoch wrote
     # a window, or about the centring, or about a cut point, and then no
@@ -941,20 +1027,19 @@ def main():
         if len(ix) == 0:
             continue
         w = common[ix]
-        again = digitize((Z[w] - mu[w]) @ eps[e]["basis"].T,
-                         eps[e]["bkpt"], eps[e]["alpha"])
+        again = digitize(Z[w] @ eps[e]["basis"].T, eps[e]["bkpt"], eps[e]["alpha"])
         mismatched += int((again != wo[ix]).any(axis=1).sum())
     if mismatched:
-        sys.exit("%d of %d words could not be re-derived from the raw "
-                 "windows with the bases and dictionaries the C exported. "
-                 "The files do not describe one run, or this script reads "
-                 "an epoch boundary differently from the C."
-                 % (mismatched, len(common)))
+        sys.exit(
+            "%d of %d words could not be re-derived from the raw "
+            "windows with the bases and dictionaries the C exported. "
+            "The files do not describe one run, or this script reads "
+            "an epoch boundary differently from the C." % (mismatched, len(common))
+        )
 
     # --------------------------------------------- the distance matrices
     rng = np.random.default_rng(args.seed)
-    take = rng.choice(len(common), size=min(args.sample, len(common)),
-                      replace=False)
+    take = rng.choice(len(common), size=min(args.sample, len(common)), replace=False)
     take.sort()
     n = len(take)
     win = common[take]
@@ -963,9 +1048,10 @@ def main():
     # Their mindist subtracts -MAX from +MAX in cells it then masks out, and
     # numpy warns about the overflow. The masked value is never used.
     with np.errstate(over="ignore", invalid="ignore"):
-        euclid = dist.euclidean_vectorized(Z[win], Z[win])
-        md_o, md_s, apart, skipped = online_distances(
-            dist, win, wo[take], ep_take, eps, Z, Z[win] - mu[win], m)
+        euclid = euclid_blocks(dist, Z[win])
+        md_q, md_o, md_s, apart, skipped = online_distances(
+            dist, win, wo[take], ep_take, eps, Z, Z[win], m, g["eps"]
+        )
         md_w = dist.spartan_pca_mindist(ww[take], ww[take], warm["mdb"])
         md_h = dist.spartan_pca_mindist(wh[take], wh[take], hind["mdb"])
 
@@ -981,16 +1067,19 @@ def main():
     ev_err = np.abs(eps[0]["ev"] - warm["ev"])
     worst_pos = int(np.argmax(ev_err))
 
+    ratio_q = tlb_ratios(md_q, euclid)
     ratio_o = tlb_ratios(md_o, euclid)
     ratio_s = tlb_ratios(md_s, euclid)
     ratio_w = tlb_ratios(md_w, euclid)
     ratio_h = tlb_ratios(md_h, euclid)
+    s_q = tlb_summary(ratio_q, md_q, euclid)
     s_o = tlb_summary(ratio_o, md_o, euclid)
     s_s = tlb_summary(ratio_s, md_s, euclid)
     s_w = tlb_summary(ratio_w, md_w, euclid)
     s_h = tlb_summary(ratio_h, md_h, euclid)
-    broken = any(s["violations"] for s in (s_o, s_s, s_w, s_h))
+    broken = any(s["violations"] for s in (s_q, s_o, s_s, s_w, s_h))
 
+    pp_q = pruning_power(md_q, euclid, KNN_K)
     pp_o = pruning_power(md_o, euclid, KNN_K)
     pp_s = pruning_power(md_s, euclid, KNN_K)
     pp_w = pruning_power(md_w, euclid, KNN_K)
@@ -1001,99 +1090,160 @@ def main():
     ov_w = {kk: neighbour_overlap(md_o, md_w, kk) for kk in KNN_K if kk < n}
     ov_h = {kk: neighbour_overlap(md_o, md_h, kk) for kk in KNN_K if kk < n}
     if not ov_w:
-        sys.exit("--sample %d is too small for any neighbourhood size in %s"
-                 % (n, list(KNN_K)))
+        sys.exit(
+            "--sample %d is too small for any neighbourhood size in %s"
+            % (n, list(KNN_K))
+        )
     head_k = TOP_K if TOP_K in ov_w else max(ov_w)
 
-    b_on = state_bytes_online(k, m, g["ring_w"])
-    b_ep = epoch_bytes(k, m)
+    b_on = state_bytes_online(k, m, g["ring_w"], g["max_alphabet"])
+    b_ep = epoch_bytes(k, m, g["max_alphabet"])
     b_ba = state_bytes_batch(n_total, m)
 
-    W = 11      # width of one number column
+    W = 11  # width of one number column
+
     def row(label, *vals):
-        print("  %-26s" % label + "".join(
-            v.rjust(W) if isinstance(v, str) else ("%*.4f" % (W, v))
-            for v in vals))
+        print(
+            "  %-26s" % label
+            + "".join(
+                v.rjust(W) if isinstance(v, str) else ("%*.4f" % (W, v)) for v in vals
+            )
+        )
 
     def pct(v):
         return "%.1f %%" % (100.0 * v)
 
-    print("%s   %d windows x %d   warm-up %d   scored %d   sample %d   "
-          "seed %d" % (name, n_total, m, g["warmup"], len(common), n,
-                       args.seed))
-    print("words re-derived %d/%d   pairs same epoch %s   cross %s"
-          % (len(common), len(common), pct(share_same),
-             pct(1.0 - share_same)))
+    print(
+        "%s   %d windows x %d   warm-up %d   scored %d   sample %d   "
+        "seed %d" % (name, n_total, m, g["warmup"], len(common), n, args.seed)
+    )
+    print(
+        "words re-derived %d/%d   pairs same epoch %s   cross %s"
+        % (len(common), len(common), pct(share_same), pct(1.0 - share_same))
+    )
     print()
 
     print("1 SUBSPACE")
-    print("  %-7s %8s %8s %11s %11s   %s"
-          % ("", "first", "windows", "to prev", "to hind", "bits"))
+    print(
+        "  %-9s %8s %8s %11s %13s   %s"
+        % ("", "first", "windows", "to prev", "to batch all", "bits")
+    )
     ep_rows = []
     for e in range(ne):
         last = firsts[e + 1] if e + 1 < ne else n_total
-        a_prev = (float(principal_angles_deg(eps[e]["basis"],
-                                             eps[e - 1]["basis"]).max())
-                  if e else 0.0)
-        a_hind = float(principal_angles_deg(eps[e]["basis"],
-                                            hind["basis"]).max())
+        a_prev = (
+            float(principal_angles_deg(eps[e]["basis"], eps[e - 1]["basis"]).max())
+            if e
+            else 0.0
+        )
+        a_hind = float(principal_angles_deg(eps[e]["basis"], hind["basis"]).max())
         ep_rows.append([e, firsts[e], last - firsts[e], a_prev, a_hind])
-        print("  %-7s %8d %8d %11s %9.2f deg   %s"
-              % ("epoch %d" % e, firsts[e], last - firsts[e],
-                 ("%.2f deg" % a_prev) if e else "-", a_hind,
-                 " ".join(str(b) for b in eps[e]["bits"])))
+        print(
+            "  %-9s %8d %8d %11s %9.2f deg   %s"
+            % (
+                "epoch %d" % e,
+                firsts[e],
+                last - firsts[e],
+                ("%.2f deg" % a_prev) if e else "-",
+                a_hind,
+                " ".join(str(b) for b in eps[e]["bits"]),
+            )
+        )
     a_wh = float(principal_angles_deg(warm["basis"], hind["basis"]).max())
-    print("  %-7s %8d %8s %11s %9.2f deg   %s"
-          % ("warm-up", 0, g["warmup"], "-", a_wh,
-             " ".join(str(b) for b in warm["bits"])))
-    print("  %-7s %8d %8d %11s %13s   %s"
-          % ("hind", g["warmup"], n_total - g["warmup"], "-", "-",
-             " ".join(str(b) for b in hind["bits"])))
-    print("  epoch 0 vs warm-up   angle %.2f deg   ev worst diff %.4f at "
-          "pos %d" % (ang0.max(), ev_err[worst_pos], worst_pos))
+    print(
+        "  %-9s %8d %8s %11s %9.2f deg   %s"
+        % (
+            "b.warm-up",
+            0,
+            g["warmup"],
+            "-",
+            a_wh,
+            " ".join(str(b) for b in warm["bits"]),
+        )
+    )
+    print(
+        "  %-9s %8d %8d %11s %13s   %s"
+        % (
+            "b.all",
+            g["warmup"],
+            n_total - g["warmup"],
+            "-",
+            "-",
+            " ".join(str(b) for b in hind["bits"]),
+        )
+    )
+    print(
+        "  epoch 0 vs batch warm-up   angle %.2f deg   ev worst diff %.4f "
+        "at pos %d" % (ang0.max(), ev_err[worst_pos], worst_pos)
+    )
     print()
 
-    print("2 TLB" + " " * 24 + "online".rjust(W) + "warm-up".rjust(W)
-          + "hind".rjust(W))
+    def head(title, *cols):
+        top = [c.split("/")[0] for c in cols]
+        bot = [c.split("/")[1] if "/" in c else "" for c in cols]
+        print(("%-28s" % title) + "".join(t.rjust(W) for t in top))
+        if any(bot):
+            print(" " * 28 + "".join(b.rjust(W) for b in bot))
+
+    head("2 TLB", "search", "box", "join", "batch/warm-up", "batch/all")
     for key in ("mean", "median", "p10"):
-        row(key, s_o[key], s_w[key], s_h[key])
-    row("zero", pct(s_o["zeros"]), pct(s_w["zeros"]), pct(s_h["zeros"]))
-    row("violations", str(s_o["violations"]), str(s_w["violations"]),
-        str(s_h["violations"]))
+        row(key, s_q[key], s_o[key], s_s[key], s_w[key], s_h[key])
+    row(
+        "zero",
+        pct(s_q["zeros"]),
+        pct(s_o["zeros"]),
+        pct(s_s["zeros"]),
+        pct(s_w["zeros"]),
+        pct(s_h["zeros"]),
+    )
+    row(
+        "violations",
+        str(s_q["violations"]),
+        str(s_o["violations"]),
+        str(s_s["violations"]),
+        str(s_w["violations"]),
+        str(s_h["violations"]),
+    )
     if broken:
         print("  *** BOUND BROKEN ***")
     print()
 
     pair_rows = []
-    print("2b TLB by pair" + " " * 15 + "share".rjust(W) + "live r".rjust(W)
-          + "stored r".rjust(W) + "hind".rjust(W))
+    head("2b TLB by pair", "share", "search", "box", "join", "batch/all")
 
     def part(label, mask, kind):
         if not mask.any():
             return
-        r_ = [kind, float(mask.mean()), float(ratio_o[mask].mean()),
-              float(ratio_s[mask].mean()), float(ratio_h[mask].mean())]
+        r_ = [
+            kind,
+            float(mask.mean()),
+            float(ratio_o[mask].mean()),
+            float(ratio_s[mask].mean()),
+            float(ratio_h[mask].mean()),
+            float(ratio_q[mask].mean()),
+        ]
         pair_rows.append(r_)
-        row(label, pct(r_[1]), r_[2], r_[3], r_[4])
+        row(label, pct(r_[1]), r_[5], r_[2], r_[3], r_[4])
 
     part("same epoch", same, "same")
     part("cross epoch", cross, "cross")
     for lo_deg, hi_deg in ANGLE_BINS:
-        part("  %d-%d deg" % (lo_deg, hi_deg),
-             cross & (apart > lo_deg) & (apart <= hi_deg),
-             "deg%dto%d" % (lo_deg, hi_deg))
+        part(
+            "  %d-%d deg" % (lo_deg, hi_deg),
+            cross & (apart > lo_deg) & (apart <= hi_deg),
+            "deg%dto%d" % (lo_deg, hi_deg),
+        )
     part("all", np.ones_like(same), "all")
     if skipped:
         row("refused (bound 0)", str(skipped))
     print()
 
-    print("3 PRUNING" + " " * 20 + "online".rjust(W) + "warm-up".rjust(W)
-          + "hind".rjust(W) + "stored r".rjust(W))
+    head("3 PRUNING", "search", "box", "join", "batch/warm-up", "batch/all")
     for kk in sorted(pp_o):
-        row("k = %d" % kk, pp_o[kk], pp_w[kk], pp_h[kk], pp_s[kk])
+        row("k = %d" % kk, pp_q[kk], pp_o[kk], pp_s[kk], pp_w[kk], pp_h[kk])
     print()
 
-    print("4 AGREEMENT" + " " * 18 + "warm-up".rjust(W) + "hind".rjust(W))
+    head("4 AGREEMENT, box against", "batch/warm-up", "batch/all")
     row("spearman", rho_w, rho_h)
     row("top-%d overlap" % head_k, ov_w[head_k], ov_h[head_k])
     print()
@@ -1104,10 +1254,16 @@ def main():
     row("batch (%d windows)" % n_total, human_bytes(b_ba))
     print()
 
-    print("6 ONLINE / HIND")
-    row("TLB mean", s_o["mean"] / s_h["mean"])
+    # Queries use the cross-epoch bound the run was configured with; joins
+    # have no window and are always box with the worst r
+    qname = g["cross_epoch"]
+    s_qry, pp_qry = (s_q, pp_q) if qname == "search" else (s_o, pp_o)
+    print("6 OURS / BATCH ALL")
+    row("TLB mean, query (%s)" % qname, s_qry["mean"] / s_h["mean"])
+    row("TLB mean, join", s_s["mean"] / s_h["mean"])
     if head_k in pp_o and pp_h[head_k] > 0:
-        row("pruning k = %d" % head_k, pp_o[head_k] / pp_h[head_k])
+        row("prune k=%d, query (%s)" % (head_k, qname), pp_qry[head_k] / pp_h[head_k])
+        row("prune k=%d, join" % head_k, pp_s[head_k] / pp_h[head_k])
     row("memory", (b_on + ne * b_ep) / float(b_ba))
     print()
 
@@ -1120,114 +1276,227 @@ def main():
         for i, (j, dot, deg) in enumerate(alignment(basis_o, basis_r)):
             flips += dot < 0
             swaps += j != i
-            print("     our %d -> their %d   dot %+.4f   arrow %5.1f deg "
-                  "apart%s%s" % (i, j, dot, deg,
-                                 "  FLIPPED" if dot < 0 else "",
-                                 "  SWAPPED" if j != i else ""))
-        print("     %d of %d arrows point the opposite way, %d are numbered "
-              "differently" % (flips, k, swaps))
-        print("     an arrow tens of degrees away while the subspace angle "
-              "is small means it was")
-        print("     rotated inside the plane of an equal pair. Neither side "
-              "is wrong.")
+            print(
+                "     our %d -> their %d   dot %+.4f   arrow %5.1f deg "
+                "apart%s%s"
+                % (
+                    i,
+                    j,
+                    dot,
+                    deg,
+                    "  FLIPPED" if dot < 0 else "",
+                    "  SWAPPED" if j != i else "",
+                )
+            )
+        print(
+            "     %d of %d arrows point the opposite way, %d are numbered "
+            "differently" % (flips, k, swaps)
+        )
+        print(
+            "     an arrow tens of degrees away while the subspace angle "
+            "is small means it was"
+        )
+        print("     rotated inside the plane of an equal pair. Neither side is wrong.")
         print()
 
         sd_o = (Zc @ basis_o.T).std(axis=0)
         sd_r = (Zc @ basis_r.T).std(axis=0)
-        print("   BREAKPOINTS in standard deviations of their own axis "
-              "(diagnostic)")
+        print("   BREAKPOINTS in standard deviations of their own axis (diagnostic)")
         for j, (a, b) in enumerate(zip(bo, warm["mdb"])):
-            ia, ib = a[1:-1] / sd_o[j], b[1:len(a) - 1] / sd_r[j]
+            ia, ib = a[1:-1] / sd_o[j], b[1 : len(a) - 1] / sd_r[j]
             if len(ia) == 0 or len(ia) != len(ib):
                 continue
-            print("     pos %d   spread ours %6.3f  theirs %6.3f   worst cut "
-                  "differs by %.3f sd"
-                  % (j, sd_o[j], sd_r[j], float(np.abs(ia - ib).max())))
-        print("     they round projections to 4 decimals before binning and "
-              "we do not,")
-        print("     so a difference at that scale is expected by "
-              "construction.")
+            print(
+                "     pos %d   spread ours %6.3f  theirs %6.3f   worst cut "
+                "differs by %.3f sd"
+                % (j, sd_o[j], sd_r[j], float(np.abs(ia - ib).max()))
+            )
+        print("     they round projections to 4 decimals before binning and we do not,")
+        print("     so a difference at that scale is expected by construction.")
         print()
 
     # --------------------------------------------------------- the tables
     written = []
 
     p = os.path.join(args.out, "conv_subspace.csv")
-    written.append((p, write_table(
-        p, ["pos", "ev_online", "ev_batch", "bits_online", "bits_batch"],
-        [[j, eps[0]["ev"][j], warm["ev"][j], eps[0]["bits"][j],
-          warm["bits"][j]] for j in range(k)])))
+    written.append(
+        (
+            p,
+            write_table(
+                p,
+                ["pos", "ev_online", "ev_batch", "bits_online", "bits_batch"],
+                [
+                    [
+                        j,
+                        eps[0]["ev"][j],
+                        warm["ev"][j],
+                        eps[0]["bits"][j],
+                        warm["bits"][j],
+                    ]
+                    for j in range(k)
+                ],
+            ),
+        )
+    )
 
     p = os.path.join(args.out, "epochs.csv")
-    written.append((p, write_table(
-        p, ["epoch", "first_window", "windows", "angle_prev", "angle_hind"],
-        ep_rows)))
+    written.append(
+        (
+            p,
+            write_table(
+                p,
+                ["epoch", "first_window", "windows", "angle_prev", "angle_hind"],
+                ep_rows,
+            ),
+        )
+    )
 
     grid = np.linspace(0.0, 1.0, CDF_POINTS)
-    cdfs = [tlb_cdf(r, grid) for r in (ratio_o, ratio_w, ratio_h, ratio_s)]
+    cdfs = [tlb_cdf(r, grid) for r in (ratio_o, ratio_w, ratio_h, ratio_s, ratio_q)]
     p = os.path.join(args.out, "tlb_cdf.csv")
-    written.append((p, write_table(
-        p, ["tlb", "frac_online", "frac_batch", "frac_hindsight",
-            "frac_stored"],
-        [[grid[i]] + [c[i] for c in cdfs] for i in range(CDF_POINTS)])))
+    written.append(
+        (
+            p,
+            write_table(
+                p,
+                [
+                    "tlb",
+                    "frac_online",
+                    "frac_batch",
+                    "frac_hindsight",
+                    "frac_stored",
+                    "frac_search",
+                ],
+                [[grid[i]] + [c[i] for c in cdfs] for i in range(CDF_POINTS)],
+            ),
+        )
+    )
 
     p = os.path.join(args.out, "tlb_summary.csv")
-    written.append((p, write_table(
-        p, ["method", "mean", "median", "p10", "zeros", "violations"],
-        [[lab, s["mean"], s["median"], s["p10"], s["zeros"], s["violations"]]
-         for lab, s in (("online", s_o), ("batch", s_w), ("hindsight", s_h),
-                        ("stored", s_s))])))
+    written.append(
+        (
+            p,
+            write_table(
+                p,
+                ["method", "mean", "median", "p10", "zeros", "violations"],
+                [
+                    [lab, s["mean"], s["median"], s["p10"], s["zeros"], s["violations"]]
+                    for lab, s in (
+                        ("online", s_o),
+                        ("batch", s_w),
+                        ("hindsight", s_h),
+                        ("stored", s_s),
+                        ("search", s_q),
+                    )
+                ],
+            ),
+        )
+    )
 
     p = os.path.join(args.out, "tlb_pairs.csv")
-    written.append((p, write_table(
-        p, ["kind", "share", "online", "stored", "hindsight"], pair_rows)))
+    written.append(
+        (
+            p,
+            write_table(
+                p,
+                ["kind", "share", "online", "stored", "hindsight", "search"],
+                pair_rows,
+            ),
+        )
+    )
 
     p = os.path.join(args.out, "pruning.csv")
-    written.append((p, write_table(
-        p, ["k", "prune_online", "prune_batch", "prune_hindsight",
-            "prune_stored"],
-        [[kk, pp_o[kk], pp_w[kk], pp_h[kk], pp_s[kk]]
-         for kk in sorted(pp_o)])))
+    written.append(
+        (
+            p,
+            write_table(
+                p,
+                [
+                    "k",
+                    "prune_online",
+                    "prune_batch",
+                    "prune_hindsight",
+                    "prune_stored",
+                    "prune_search",
+                ],
+                [
+                    [kk, pp_o[kk], pp_w[kk], pp_h[kk], pp_s[kk], pp_q[kk]]
+                    for kk in sorted(pp_o)
+                ],
+            ),
+        )
+    )
 
     p = os.path.join(args.out, "agreement.csv")
-    written.append((p, write_table(
-        p, ["k", "overlap", "overlap_hindsight"],
-        [[kk, ov_w[kk], ov_h[kk]] for kk in sorted(ov_w)])))
+    written.append(
+        (
+            p,
+            write_table(
+                p,
+                ["k", "overlap", "overlap_hindsight"],
+                [[kk, ov_w[kk], ov_h[kk]] for kk in sorted(ov_w)],
+            ),
+        )
+    )
 
     # One row per decade-ish of stream length, so the figure shows the shape
     # of the two curves rather than one point each. The online row does not
     # depend on n, which IS the result: a horizontal line against a diagonal.
-    ns = [1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000,
-          1000000, 2000000, 5000000]
+    ns = [
+        1000,
+        2000,
+        5000,
+        10000,
+        20000,
+        50000,
+        100000,
+        200000,
+        500000,
+        1000000,
+        2000000,
+        5000000,
+    ]
     p = os.path.join(args.out, "scaling.csv")
-    written.append((p, write_table(
-        p, ["n", "bytes_online", "bytes_batch"],
-        [[nn, b_on, state_bytes_batch(nn, m)] for nn in ns])))
+    written.append(
+        (
+            p,
+            write_table(
+                p,
+                ["n", "bytes_online", "bytes_batch"],
+                [[nn, b_on, state_bytes_batch(nn, m)] for nn in ns],
+            ),
+        )
+    )
 
     cross_mean = float(ratio_o[cross].mean()) if cross.any() else 0.0
     p = os.path.join(args.out, "scalars.tex")
-    n_mac = write_scalars(p, [
-        ("thetamax", ang0.max()),
-        ("everrmax", ev_err[worst_pos]),
-        ("everrpos", str(worst_pos)),
-        ("spearman", rho_w),
-        ("spearmanhind", rho_h),
-        ("overlapten", ov_w[head_k]),
-        ("overlaptenhind", ov_h[head_k]),
-        ("tlbonline", s_o["mean"]),
-        ("tlbstored", s_s["mean"]),
-        ("tlbbatch", s_w["mean"]),
-        ("tlbhind", s_h["mean"]),
-        ("tlbratio", s_o["mean"] / s_w["mean"]),
-        ("tlbratiohind", s_o["mean"] / s_h["mean"]),
-        ("tlbsame", float(ratio_o[same].mean())),
-        ("tlbcross", cross_mean),
-        ("tlbptenonline", s_o["p10"]),
-        ("tlbptenbatch", s_w["p10"]),
-        ("tlbptenhind", s_h["p10"]),
-        ("nepochs", str(ne)),
-        ("nwindows", str(n)),
-    ], prefix=args.tex_prefix)
+    n_mac = write_scalars(
+        p,
+        [
+            ("thetamax", ang0.max()),
+            ("everrmax", ev_err[worst_pos]),
+            ("everrpos", str(worst_pos)),
+            ("spearman", rho_w),
+            ("spearmanhind", rho_h),
+            ("overlapten", ov_w[head_k]),
+            ("overlaptenhind", ov_h[head_k]),
+            ("tlbsearch", s_q["mean"]),
+            ("tlbonline", s_o["mean"]),
+            ("tlbstored", s_s["mean"]),
+            ("tlbbatch", s_w["mean"]),
+            ("tlbhind", s_h["mean"]),
+            ("tlbratio", s_o["mean"] / s_w["mean"]),
+            ("tlbratiohind", s_o["mean"] / s_h["mean"]),
+            ("tlbsame", float(ratio_o[same].mean())),
+            ("tlbcross", cross_mean),
+            ("tlbptenonline", s_o["p10"]),
+            ("tlbptenbatch", s_w["p10"]),
+            ("tlbptenhind", s_h["p10"]),
+            ("nepochs", str(ne)),
+            ("nwindows", str(n)),
+        ],
+        prefix=args.tex_prefix,
+    )
     written.append((p, n_mac))
 
     for path, nrows in written:

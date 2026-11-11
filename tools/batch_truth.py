@@ -9,6 +9,11 @@ file, so it can be run before the C has ever been run on the data.
 It works on ANY frames file, synthetic or real UCR, which is why it is a tool
 of its own rather than part of the generator.
 
+Every setting (window, stride, k, budget, warm-up) is read from the
+settings.cfg the C wrote for this run, so the C must run first. If the data
+came from make_tsb.py, it also rebuilds the planted signal from the
+.meta.json and grades against it, at the window this run used.
+
 What it writes, next to the data in ../truth/<name>.truth.json:
 
     shares       the top-k variance shares, normalised among themselves,
@@ -28,68 +33,7 @@ import os
 import sys
 
 import numpy as np
-
-# Must match src/spartan.h:20-21. There the cap is DERIVED:
-#     #define MAX_ALPHABET 16
-#     #define MAX_BITS (__builtin_ctz(MAX_ALPHABET))
-# so it is derived here the same way instead of being written out as a second
-# number that can drift. For a power of two, bit_length()-1 is ctz.
-# Change MAX_ALPHABET in the header and change the one number below to match.
-MAX_ALPHABET = 16
-MAX_BITS = MAX_ALPHABET.bit_length() - 1
-
-# Must match SPARTAN_EPS in src/spartan.h. znorm divides by (std + EPS).
-SPARTAN_EPS = 1e-12
-
-
-# --------------------------------------------------------------------------
-# settings
-# --------------------------------------------------------------------------
-
-
-def read_cfg(path):
-    """Parse the settings file the C reads, with the same rules: one
-    `key = value` per line, '#' starts a comment, blanks ignored.
-
-    Returns a plain dict of strings. Unlike the C this does NOT reject unknown
-    keys: the C owns that check, and duplicating it here would mean two places
-    to update every time a knob is added.
-    """
-    cfg = {}
-    with open(path) as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
-            if "=" not in line:
-                sys.exit("%s: line is not 'key = value': %r" % (path, line))
-            k, v = line.split("=", 1)
-            cfg[k.strip()] = v.strip()
-    return cfg
-
-
-def geometry(cfg):
-    """The handful of settings this tool needs, with the C's own defaults
-    filled in where the file is silent.
-
-    stride defaults to window and total_bits to 2*components, exactly as
-    config.c:283-284 resolves them, so a file that leaves them out is read the
-    same way here as there.
-    """
-    g = dict(
-        input=cfg["input"],
-        d=int(cfg.get("channels", 1)),
-        m_time=int(cfg["window"]),
-        k=int(cfg["components"]),
-        warmup=int(cfg["warmup"]),
-        lam=float(cfg.get("lambda", 0.5)),
-        ring_w=int(cfg.get("ring_window", 0)),
-    )
-    g["stride"] = int(cfg.get("stride", g["m_time"]))
-    g["total_bits"] = int(cfg.get("total_bits", 2 * g["k"]))
-    g["m"] = g["d"] * g["m_time"]
-    return g
-
+from read_settings import geometry
 
 # --------------------------------------------------------------------------
 # reading the stream the way the C reads it
@@ -116,21 +60,22 @@ def read_windows(path, d, m_time, stride):
 
     flat = np.asarray(vals, dtype=float)
     if len(flat) % d != 0:
-        sys.exit("%s: %d numbers is not a multiple of channels = %d"
-                 % (path, len(flat), d))
-    frames = flat.reshape(-1, d)                   # (n_frames, d)
+        sys.exit(
+            "%s: %d numbers is not a multiple of channels = %d" % (path, len(flat), d)
+        )
+    frames = flat.reshape(-1, d)  # (n_frames, d)
 
     n_frames = len(frames)
     n_win = 0 if n_frames < m_time else 1 + (n_frames - m_time) // stride
 
     out = np.empty((n_win, d * m_time))
     for w in range(n_win):
-        block = frames[w * stride: w * stride + m_time]      # (m_time, d)
-        out[w] = block.T.reshape(-1)                         # channels first
+        block = frames[w * stride : w * stride + m_time]  # (m_time, d)
+        out[w] = block.T.reshape(-1)  # channels first
     return out
 
 
-def znorm_rows(X, d):
+def znorm_rows(X, d, eps):
     """z-norm PER CHANNEL, the way main.c:366-368 does it.
 
     The C loops the channels and calls znorm_row on each m_time slice, so
@@ -150,13 +95,22 @@ def znorm_rows(X, d):
     """
     B = X.reshape(len(X), d, -1)
     mu = B.mean(axis=2, keepdims=True)
-    sd = np.sqrt(((B - mu) ** 2).mean(axis=2, keepdims=True)) + SPARTAN_EPS
+    sd = np.sqrt(((B - mu) ** 2).mean(axis=2, keepdims=True)) + eps
     return ((B - mu) / sd).reshape(len(X), -1)
 
 
 # --------------------------------------------------------------------------
 # the offline answer
 # --------------------------------------------------------------------------
+
+
+def spectrum(Z):
+    """All eigenvalues of the window covariance, descending, and the
+    eigenvectors as rows in the same order."""
+    Zc = Z - Z.mean(axis=0)
+    w, V = np.linalg.eigh(Zc.T @ Zc / len(Z))
+    order = np.argsort(w)[::-1]
+    return w[order], V[:, order].T
 
 
 def batch_pca(Z, k):
@@ -175,14 +129,14 @@ def batch_pca(Z, k):
     """
     Zc = Z - Z.mean(axis=0)
     C = Zc.T @ Zc / len(Z)
-    w, V = np.linalg.eigh(C)              # ascending, orthonormal columns
-    order = np.argsort(w)[::-1][:k]       # descending, keep k
+    w, V = np.linalg.eigh(C)  # ascending, orthonormal columns
+    order = np.argsort(w)[::-1][:k]  # descending, keep k
     vals = w[order]
-    dirs = V[:, order].T                  # rows are directions
+    dirs = V[:, order].T  # rows are directions
     return vals / vals.sum(), dirs
 
 
-def best_split(shares, total_bits, lam, max_bits=MAX_BITS):
+def best_split(shares, total_bits, lam, max_bits):
     """The optimal bit allocation, by exhaustive search over every
     non-increasing allocation that spends the budget exactly.
 
@@ -209,8 +163,7 @@ def best_split(shares, total_bits, lam, max_bits=MAX_BITS):
         if i == k:
             if left != 0:
                 return
-            sc = sum(b * e - lam * (b - ref) ** 2 * e
-                     for b, e in zip(acc, shares))
+            sc = sum(b * e - lam * (b - ref) ** 2 * e for b, e in zip(acc, shares))
             if sc > best_score:
                 best_score, best = sc, list(acc)
             return
@@ -243,28 +196,71 @@ def fmt_row(label, vals, fmt):
     return "  %-9s %s" % (label, " ".join(fmt % v for v in vals))
 
 
+def planted(meta, g, Z):
+    """What make_tsb.py planted, at this run's window. None for any other
+    data. Returns (directions, planted drift deg, drift in the data deg).
+
+    The drift is measured the same way both times, top-k batch PCA on the
+    first tenth of the windows against the last tenth: on the noise-free
+    signal it is the motion that was planted, on the data it is that plus
+    sampling noise.
+    """
+    if meta.get("generator") != "tools/make_tsb.py":
+        return None
+    import make_tsb
+
+    sig = meta["signal"]
+    dirs = make_tsb.planted_directions(sig["periods"], g["m_time"])
+
+    def ends(Zs):
+        n = len(Zs) // 10
+        _, A = spectrum(Zs[:n])
+        _, B = spectrum(Zs[-n:])
+        return principal_angle_deg(A[: g["k"]], B[: g["k"]])
+
+    in_data = ends(Z)
+    if sig["drift"] is None:
+        return dirs, 0.0, in_data
+    x0 = make_tsb.signal(
+        meta["n_frames"], sig["periods"], sig["amplitudes"], sig["drift"], sig["seed"]
+    )
+    n_win = 1 + (len(x0) - g["m_time"]) // g["stride"]
+    X0 = np.array(
+        [x0[w * g["stride"] : w * g["stride"] + g["m_time"]] for w in range(n_win)]
+    )
+    return dirs, ends(znorm_rows(X0, 1, g["eps"])), in_data
+
+
 def main():
     if len(sys.argv) != 2:
         print(__doc__)
         return 2
     cfg_path = sys.argv[1]
-    g = geometry(read_cfg(cfg_path))
+    g = geometry(cfg_path)
+    max_bits = g["max_alphabet"].bit_length() - 1
 
     print("stream   %s" % g["input"])
     X = read_windows(g["input"], g["d"], g["m_time"], g["stride"])
-    Z = znorm_rows(X, g["d"])
+    Z = znorm_rows(X, g["d"], g["eps"])
 
     n = len(Z)
     if g["warmup"] >= n:
-        sys.exit("warmup = %d but the stream only has %d windows: nothing "
-                 "would get a word" % (g["warmup"], n))
-    post = Z[g["warmup"]:]
-    print("windows  %d total, %d after the %d warm-up"
-          % (n, len(post), g["warmup"]))
+        sys.exit(
+            "warmup = %d but the stream only has %d windows: nothing "
+            "would get a word" % (g["warmup"], n)
+        )
+    post = Z[g["warmup"] :]
+    print(
+        "windows  %d total, %d after the %d warm-up   (window %d, stride "
+        "%d, k %d)" % (n, len(post), g["warmup"], g["m_time"], g["stride"], g["k"])
+    )
 
     shares, dirs = batch_pca(post, g["k"])
-    bits, score = best_split(shares.tolist(), g["total_bits"], g["lam"])
+    bits, score = best_split(shares.tolist(), g["total_bits"], g["lam"], max_bits)
     alphabet = [1 << b for b in bits]
+    w_all, _ = spectrum(post)
+    top = w_all[: g["k"]].sum() / w_all.sum()
+    flat = w_all[g["k"]] <= 1e-12 * w_all[0]
 
     print()
     print("batch PCA over the windows that get words")
@@ -272,51 +268,85 @@ def main():
     print(fmt_row("bits", bits, "%6d"))
     print(fmt_row("alphabet", alphabet, "%6d"))
     print("  %-9s %.6f" % ("objective", score))
+    print("  top %-5d hold %.1f %% of the energy" % (g["k"], 100 * top))
+    if flat:
+        print(
+            "  gap at %d  lambda%d / lambda%d = inf, nothing beyond %d"
+            % (g["k"], g["k"], g["k"] + 1, g["k"])
+        )
+    else:
+        print(
+            "  gap at %d  lambda%d / lambda%d = %.1f"
+            % (g["k"], g["k"], g["k"] + 1, w_all[g["k"] - 1] / w_all[g["k"]])
+        )
 
     # The collected-quantile rule: a breakpoint is an empirical quantile of
     # the projections in the ring, so each cell needs enough points to mean
     # something. Ten per cell is the rule we settled on.
     need_ring = 10 * max(alphabet)
     note = ""
-    if g["ring_w"] and g["ring_w"] < need_ring:
-        note = "   <-- cfg has %d, TOO SMALL" % g["ring_w"]
+    if g["ring_w"] < need_ring:
+        note = "   <-- run has %d, TOO SMALL" % g["ring_w"]
     print("  %-9s %d%s" % ("ring need", need_ring, note))
 
-    # If the data was planted by make_datasets.py, grade the batch answer
-    # against what was planted. On real data there is nothing to compare to.
     meta_path = os.path.splitext(g["input"])[0] + ".meta.json"
-    planted_deg = None
+    planted_deg = drift_planted = drift_data = None
     if os.path.exists(meta_path):
         with open(meta_path) as f:
             meta = json.load(f)
-        planted = np.asarray(meta["shapes"]["directions"])
-        planted_deg = principal_angle_deg(planted, dirs)
+        got = planted(meta, g, post)
+        if got is not None:
+            pd, drift_planted, drift_data = got
+        else:
+            pd = np.asarray(meta["shapes"]["directions"])
+        planted_deg = principal_angle_deg(pd, dirs)
         print()
         print("angle to the planted shapes  %.2f deg" % planted_deg)
+        if got is not None:
+            print(
+                "drift    planted %.1f deg, in the data %.1f deg (first 10 %% "
+                "vs last 10 %% of the windows)" % (drift_planted, drift_data)
+            )
 
     name = os.path.splitext(os.path.basename(g["input"]))[0]
-    out_dir = os.path.join(os.path.dirname(os.path.dirname(g["input"])),
-                           "truth")
+    out_dir = os.path.join(os.path.dirname(os.path.dirname(g["input"])), "truth")
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, name + ".truth.json")
 
     with open(out_path, "w") as f:
-        json.dump(dict(
-            name=name,
-            source=g["input"],
-            cfg=cfg_path,
-            geometry={kk: g[kk] for kk in
-                      ("d", "m_time", "m", "stride", "k", "total_bits",
-                       "lam", "warmup")},
-            over_windows=[g["warmup"], n],
-            shares=shares.tolist(),
-            directions=dirs.tolist(),
-            best_bits=bits,
-            alphabet=alphabet,
-            objective=score,
-            ring_window_needed=need_ring,
-            angle_to_planted_deg=planted_deg,
-        ), f, indent=1)
+        json.dump(
+            dict(
+                name=name,
+                source=g["input"],
+                cfg=cfg_path,
+                geometry={
+                    kk: g[kk]
+                    for kk in (
+                        "d",
+                        "m_time",
+                        "m",
+                        "stride",
+                        "k",
+                        "total_bits",
+                        "lam",
+                        "warmup",
+                    )
+                },
+                over_windows=[g["warmup"], n],
+                shares=shares.tolist(),
+                directions=dirs.tolist(),
+                best_bits=bits,
+                alphabet=alphabet,
+                objective=score,
+                top_k_energy=float(top),
+                ring_window_needed=need_ring,
+                angle_to_planted_deg=planted_deg,
+                drift_planted_deg=drift_planted,
+                drift_in_data_deg=drift_data,
+            ),
+            f,
+            indent=1,
+        )
 
     print("wrote %s" % out_path)
     return 0

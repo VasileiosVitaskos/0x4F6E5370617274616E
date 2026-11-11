@@ -12,14 +12,14 @@
 #include <string.h>
 /* ---------------- basic maths ---------------- */
 
-double dot_product(const double *v1, const double *v2, size_t n) {
+double dot_product(const double* v1, const double* v2, size_t n) {
   double sum0 = 0.0, sum1 = 0.0, sum2 = 0.0, sum3 = 0.0;
   size_t i = 0;
   double t_sum = 0.0;
   if (n >= 4) {
     for (; i <= n - 4;
-         i += 4) { // Unroll 4x into independent accumulators to break FMA
-                   // latency chains and enable SIMD vectorization
+         i += 4) {  // Unroll 4x into independent accumulators to break FMA
+                    // latency chains and enable SIMD vectorization
       sum0 += v1[i] * v2[i];
       sum1 += v1[i + 1] * v2[i + 1];
       sum2 += v1[i + 2] * v2[i + 2];
@@ -33,7 +33,7 @@ double dot_product(const double *v1, const double *v2, size_t n) {
   return t_sum;
 }
 
-void znorm_row(double *x, int m) {
+void znorm_row(double* x, int m) {
   double sum = 0.0;
   double variance = 0.0;
   double mean, std_dev;
@@ -57,45 +57,68 @@ void znorm_row(double *x, int m) {
   }
 }
 
+/*
+ * The two numbers z-norm throws away: where the window sits and how big it
+ * is. Same formulas as znorm_row, so the window can be rebuilt exactly as
+ *
+ *   x = mu + sd * znorm(x)
+ *
+ *   mu = (1/m) * sum_i x_i                  [same units as x]
+ *   sd = sqrt( (1/m) * sum_i (x_i - mu)^2 ) [same units as x]
+ *
+ * x      one channel of one window, NOT yet z-normed
+ * m      its length, m_time
+ * mu, sd outputs
+ *
+ * Edge cases:
+ *   Call BEFORE znorm_row, which overwrites x: afterwards these are 0 and 1.
+ *   No SPARTAN_EPS here, unlike znorm_row. A flat channel has spread 0,
+ *   which is the true value and a legal letter.
+ */
+void window_level(const double* x, int m, double* mu, double* sd) {
+  double sum = 0.0;
+  for (int i = 0; i < m; i++) sum += x[i];
+  double mean = sum / m;
+  double sq = 0.0;
+  for (int i = 0; i < m; i++) sq += (x[i] - mean) * (x[i] - mean);
+  *mu = mean;
+  *sd = sqrt(sq / m);
+}
+
 /* ---------------- running average of the stream ---------------- */
 
-int rmean_init(RunningMean *rm, int m) {
-  if (m <= 0)
-    return -1;
+int rmean_init(RunningMean* rm, int m) {
+  if (m <= 0) return -1;
   rm->mean = calloc((size_t)m, sizeof(double));
-  if (!rm->mean)
-    return -1;
+  if (!rm->mean) return -1;
   rm->n = 0;
   rm->m = m;
   return 0;
 }
 
-void rmean_free(RunningMean *rm) {
+void rmean_free(RunningMean* rm) {
   free(rm->mean);
   rm->mean = NULL;
   rm->n = 0;
   rm->m = 0;
 }
 
-void rmean_update(RunningMean *rm, const double *x) {
+void rmean_update(RunningMean* rm, const double* x) {
   int m = rm->m;
   rm->n++;
-  for (int i = 0; i < m; i++)
-    rm->mean[i] += (x[i] - rm->mean[i]) / rm->n;
+  for (int i = 0; i < m; i++) rm->mean[i] += (x[i] - rm->mean[i]) / rm->n;
 }
 
-void pring_free(ProjRing *r) {
-  if (!r)
-    return;
+void pring_free(ProjRing* r) {
+  if (!r) return;
   free(r->buf);
   free(r->s1);
   free(r->s2);
   memset(r, 0, sizeof(*r));
 }
 
-int pring_init(ProjRing *r, int cap, int k) {
-  if (!r || cap < 2 || k < 1)
-    return -1;
+int pring_init(ProjRing* r, int cap, int k) {
+  if (!r || cap < 2 || k < 1) return -1;
   memset(r, 0, sizeof(*r));
   r->buf = calloc((size_t)cap * k, sizeof(double));
   r->s1 = calloc((size_t)k, sizeof(double));
@@ -109,11 +132,11 @@ int pring_init(ProjRing *r, int cap, int k) {
   return 0;
 }
 
-void pring_push(ProjRing *r, const double *y) {
-  double *row =
+void pring_push(ProjRing* r, const double* y) {
+  double* row =
       &r->buf[(size_t)r->cursor *
-              r->k]; // Alias the oldest k-element slot at the circular write
-                     // cursor for O(k) moment eviction and overwrite
+              r->k];  // Alias the oldest k-element slot at the circular write
+                      // cursor for O(k) moment eviction and overwrite
 
   if (r->count == r->cap) {
     for (int j = 0; j < r->k; j++) {
@@ -136,11 +159,10 @@ void pring_push(ProjRing *r, const double *y) {
   }
 }
 
-void pring_importances(const ProjRing *r, double *ev) {
+void pring_importances(const ProjRing* r, double* ev) {
   int n = r->count;
   if (n < 1) {
-    for (int j = 0; j < r->k; j++)
-      ev[j] = 1.0 / r->k;
+    for (int j = 0; j < r->k; j++) ev[j] = 1.0 / r->k;
     return;
   }
   double total = 0.0;
@@ -148,24 +170,21 @@ void pring_importances(const ProjRing *r, double *ev) {
     double mean = r->s1[j] / n;
     double var =
         r->s2[j] / n -
-        mean * mean; // Compute variance via E[Y^2] - (E[Y])^2 and clamp below
-                     // at 0.0 to absorb floating-point cancellation
-    if (var < 0.0)
-      var = 0.0;
+        mean * mean;  // Compute variance via E[Y^2] - (E[Y])^2 and clamp below
+                      // at 0.0 to absorb floating-point cancellation
+    if (var < 0.0) var = 0.0;
 
     ev[j] = var;
     total += var;
   }
   if (total < SPARTAN_EPS) {
-    for (int j = 0; j < r->k; j++)
-      ev[j] = 1.0 / r->k;
+    for (int j = 0; j < r->k; j++) ev[j] = 1.0 / r->k;
     return;
   }
-  for (int j = 0; j < r->k; j++)
-    ev[j] /= total;
+  for (int j = 0; j < r->k; j++) ev[j] /= total;
 }
 
-void pring_refresh(ProjRing *r) {
+void pring_refresh(ProjRing* r) {
   if (r == NULL) {
     return;
   }
@@ -174,7 +193,7 @@ void pring_refresh(ProjRing *r) {
   memset(r->s2, 0, (size_t)r->k * sizeof(double));
 
   for (int i = 0; i < r->count; i++) {
-    const double *row = &r->buf[(size_t)i * r->k];
+    const double* row = &r->buf[(size_t)i * r->k];
     for (int j = 0; j < r->k; j++) {
       double val = row[j];
       r->s1[j] += val;
@@ -183,7 +202,7 @@ void pring_refresh(ProjRing *r) {
   }
 }
 
-void pring_reset(ProjRing *r) {
+void pring_reset(ProjRing* r) {
   if (r == NULL || r->buf == NULL) {
     return;
   }
@@ -198,16 +217,14 @@ void pring_reset(ProjRing *r) {
 
 /* ---------------- the PCA directions ---------------- */
 
-int oja_init(OjaPCA *p, int k, int m) {
-  if (k > m || k <= 0 || m <= 0)
-    return -1;
+int oja_init(OjaPCA* p, int k, int m) {
+  if (k > m || k <= 0 || m <= 0) return -1;
 
   p->k = k;
   p->m = m;
 
   p->v = calloc((size_t)k * m, sizeof(double));
-  if (!p->v)
-    return -1;
+  if (!p->v) return -1;
 
   p->u = calloc((size_t)m, sizeof(double));
   if (!p->u) {
@@ -217,13 +234,12 @@ int oja_init(OjaPCA *p, int k, int m) {
   }
 
   /* Start each direction on a different axis. All-zero would never move. */
-  for (int j = 0; j < k; j++)
-    p->v[j * m + j] = 1.0;
+  for (int j = 0; j < k; j++) p->v[j * m + j] = 1.0;
 
   return 0;
 }
 
-void oja_free(OjaPCA *p) {
+void oja_free(OjaPCA* p) {
   free(p->v);
   p->v = NULL;
   free(p->u);
@@ -232,15 +248,14 @@ void oja_free(OjaPCA *p) {
   p->m = 0;
 }
 
-void oja_update(OjaPCA *p, const double *xc, double lr) {
+void oja_update(OjaPCA* p, const double* xc, double lr) {
   int k = p->k, m = p->m;
-  double *u = p->u;
+  double* u = p->u;
 
-  for (int i = 0; i < m; i++)
-    u[i] = xc[i];
+  for (int i = 0; i < m; i++) u[i] = xc[i];
 
   for (int j = 0; j < k; j++) {
-    double *vj = &p->v[j * m]; // Slice row j from the flat k-by-m basis matrix
+    double* vj = &p->v[j * m];  // Slice row j from the flat k-by-m basis matrix
     double y = dot_product(u, vj, m);
     for (int i = 0; i < m; i++) {
       vj[i] += lr * y * (u[i] - y * vj[i]);
@@ -257,16 +272,16 @@ void oja_update(OjaPCA *p, const double *xc, double lr) {
   }
 }
 
-void gram_schmidt(OjaPCA *p) {
+void gram_schmidt(OjaPCA* p) {
   int k = p->k, m = p->m;
 
   for (int j = 0; j < k; j++) {
-    double *vj = &p->v[j * m];
+    double* vj = &p->v[j * m];
 
     for (int p_idx = 0; p_idx < j; p_idx++) {
-      double *vp =
-          &p->v[p_idx * m]; // Modified Gram-Schmidt: deflate vj sequentially
-                            // against already-orthogonalized rows 0 .. j-1
+      double* vp =
+          &p->v[p_idx * m];  // Modified Gram-Schmidt: deflate vj sequentially
+                             // against already-orthogonalized rows 0 .. j-1
       double d = dot_product(vj, vp, m);
       for (int i = 0; i < m; i++) {
         vj[i] -= d * vp[i];
@@ -287,34 +302,30 @@ void gram_schmidt(OjaPCA *p) {
   }
 }
 
-void oja_orthonormality_error(const OjaPCA *p, double *max_dot,
-                              double *max_len) {
+void oja_orthonormality_error(const OjaPCA* p, double* max_dot,
+                              double* max_len) {
   int k = p->k, m = p->m;
   double worst_dot = 0.0;
   double worst_len = 0.0;
 
   for (int j = 0; j < k; j++) {
-    const double *vj = &p->v[j * m];
+    const double* vj = &p->v[j * m];
 
     double len = sqrt(dot_product(vj, vj, m));
     double len_err = fabs(len - 1.0);
-    if (len_err > worst_len)
-      worst_len = len_err;
+    if (len_err > worst_len) worst_len = len_err;
 
     for (int i = j + 1; i < k; i++) {
       double d = fabs(dot_product(vj, &p->v[i * m], m));
-      if (d > worst_dot)
-        worst_dot = d;
+      if (d > worst_dot) worst_dot = d;
     }
   }
 
-  if (max_dot)
-    *max_dot = worst_dot;
-  if (max_len)
-    *max_len = worst_len;
+  if (max_dot) *max_dot = worst_dot;
+  if (max_len) *max_len = worst_len;
 }
 
-int oja_copy_from(OjaPCA *dst, const OjaPCA *src) {
+int oja_copy_from(OjaPCA* dst, const OjaPCA* src) {
   if (!dst || !src) {
     return -1;
   }
@@ -351,13 +362,11 @@ int oja_copy_from(OjaPCA *dst, const OjaPCA *src) {
  *   gram_schmidt orthogonalises row j against rows 0..j-1, so the order
  *   decides the dynamics. Snapshots only.
  */
-int oja_permute_rows(OjaPCA *p, const int *perm) {
-  if (!p || !p->v || !perm || p->k < 1 || p->m < 1)
-    return -1;
+int oja_permute_rows(OjaPCA* p, const int* perm) {
+  if (!p || !p->v || !perm || p->k < 1 || p->m < 1) return -1;
 
-  double *temporary = malloc((size_t)p->k * (size_t)p->m * sizeof(double));
-  if (!temporary)
-    return -1;
+  double* temporary = malloc((size_t)p->k * (size_t)p->m * sizeof(double));
+  if (!temporary) return -1;
   for (int i = 0; i < p->k; i++) {
     int src_row = perm[i];
     if (src_row < 0 || src_row >= p->k) {
@@ -367,15 +376,15 @@ int oja_permute_rows(OjaPCA *p, const int *perm) {
     memcpy(
         &temporary[i * p->m], &p->v[src_row * p->m],
         (size_t)p->m *
-            sizeof(double)); // Gather old row perm[i] into new row i so basis
-                             // directions match descending eigenvalue order
+            sizeof(double));  // Gather old row perm[i] into new row i so basis
+                              // directions match descending eigenvalue order
   }
   memcpy(p->v, temporary, (size_t)p->k * (size_t)p->m * sizeof(double));
   free(temporary);
   return 0;
 }
 
-int oja_blend(OjaPCA *dst, const OjaPCA *src, double beta) {
+int oja_blend(OjaPCA* dst, const OjaPCA* src, double beta) {
   if (!dst || !src || !dst->v || !src->v) {
     return -1;
   }
@@ -399,7 +408,7 @@ int oja_blend(OjaPCA *dst, const OjaPCA *src, double beta) {
 
 #define SVD_TOL 1e-14
 
-int svd_values(double *a, int n, double *sv, double *jacc) {
+int svd_values(double* a, int n, double* sv, double* jacc) {
   if (!a || !sv || n < 1) {
     return -1;
   }
@@ -418,7 +427,7 @@ int svd_values(double *a, int n, double *sv, double *jacc) {
         /* The three Gram numbers for this pair of rows. */
         double alpha = dot_product(
             &a[p * n], &a[p * n],
-            n); // Form 2x2 Gram entries for rows p and q of the n-by-n matrix
+            n);  // Form 2x2 Gram entries for rows p and q of the n-by-n matrix
         double beta = dot_product(&a[q * n], &a[q * n], n);
         double gamma = dot_product(&a[p * n], &a[q * n], n);
 
@@ -436,9 +445,10 @@ int svd_values(double *a, int n, double *sv, double *jacc) {
         double t =
             (zeta >= 0.0 ? 1.0 : -1.0) /
             (fabs(zeta) +
-             sqrt(1 +
-                  (zeta *
-                   zeta))); // Solve quadratic Jacobi tangent using sign-matched
+             sqrt(
+                 1 +
+                 (zeta *
+                  zeta)));  // Solve quadratic Jacobi tangent using sign-matched
                             // denominator to avoid catastrophic cancellation
         double c = 1 / sqrt(1 + (t * t));
         double s = c * t;
@@ -473,8 +483,8 @@ int svd_values(double *a, int n, double *sv, double *jacc) {
   return -1;
 }
 
-int subspace_angles(const OjaPCA *frozen, const OjaPCA *live, double *scratch,
-                    double *angles, double *max_angle) {
+int subspace_angles(const OjaPCA* frozen, const OjaPCA* live, double* scratch,
+                    double* angles, double* max_angle) {
   /* guard: both bases present and initialised, same k and same m, and a
      scratch to work in. */
   if (!scratch || !frozen || !live || !frozen->v || !live->v) {
@@ -499,10 +509,10 @@ int subspace_angles(const OjaPCA *frozen, const OjaPCA *live, double *scratch,
 
   /* svd_values destroys what it is given, which is why scratch exists and
      why it has to be refilled on every call rather than kept. */
-  double *sv =
+  double* sv =
       &scratch[(size_t)k *
-               k]; // Partition caller scratch buffer: first k*k doubles hold
-                   // Gram matrix, tail k doubles hold singular values
+               k];  // Partition caller scratch buffer: first k*k doubles hold
+                    // Gram matrix, tail k doubles hold singular values
   int sweeps = svd_values(scratch, k, sv, NULL);
 
   if (sweeps < 0) {
@@ -515,16 +525,13 @@ int subspace_angles(const OjaPCA *frozen, const OjaPCA *live, double *scratch,
   double max_th = 0.0;
   for (int j = 0; j < k; j++) {
     double co_val = sv[j];
-    if (co_val > 1.0)
-      co_val = 1.0;
-    if (co_val < 0.0)
-      co_val = 0.0;
+    if (co_val > 1.0) co_val = 1.0;
+    if (co_val < 0.0) co_val = 0.0;
     double angle_theta = acos(co_val);
     if (angles) {
       angles[j] = angle_theta;
     }
-    if (angle_theta > max_th)
-      max_th = angle_theta;
+    if (angle_theta > max_th) max_th = angle_theta;
   }
   if (max_angle) {
     *max_angle = max_th;
@@ -566,8 +573,8 @@ int subspace_angles(const OjaPCA *frozen, const OjaPCA *live, double *scratch,
  *   reflection preserves lengths and the bound needs only lengths. It
  *   matters only for the Lie layer, which needs a logarithm.
  */
-int epoch_map(const OjaPCA *to, const OjaPCA *from, double *scratch,
-              double *map, double *rot, double *sin_theta) {
+int epoch_map(const OjaPCA* to, const OjaPCA* from, double* scratch,
+              double* map, double* rot, double* sin_theta) {
   if (!scratch || !to || !from || !to->v || !from->v || !rot || !sin_theta) {
     return -1;
   }
@@ -581,9 +588,9 @@ int epoch_map(const OjaPCA *to, const OjaPCA *from, double *scratch,
   /* Three regions in one block. m_buf is destroyed by the sweep, jacc
      collects the rotations it applied, sv ends up holding the row
      lengths, which are the cosines. */
-  double *m_buf = scratch;
-  double *jacc = &scratch[(size_t)k * k];
-  double *sv = &scratch[2 * (size_t)k * k];
+  double* m_buf = scratch;
+  double* jacc = &scratch[(size_t)k * k];
+  double* sv = &scratch[2 * (size_t)k * k];
 
   /* Step 1: the table. Row i is a row of to, column j a row of from. */
   for (int i = 0; i < k; i++) {
@@ -602,24 +609,20 @@ int epoch_map(const OjaPCA *to, const OjaPCA *from, double *scratch,
   /* Step 2: the sweep. The only place in the code that asks for the
      accumulator, every other call passes NULL. */
   int sweeps = svd_values(m_buf, k, sv, jacc);
-  if (sweeps < 0)
-    return -2;
+  if (sweeps < 0) return -2;
 
   /* Step 3: the largest angle, through the smallest cosine. Note this
      looks for a MINIMUM, the opposite of the loop at line 498. */
   double s_min = 1.0;
   for (int t = 0; t < k; t++) {
     double val = sv[t];
-    if (val > 1.0)
-      val = 1.0;
-    if (val < 0.0)
-      val = 0.0;
+    if (val > 1.0) val = 1.0;
+    if (val < 0.0) val = 0.0;
     if (val < s_min) {
       s_min = val;
     }
   }
-  if (s_min < SPARTAN_EPS)
-    return -3;
+  if (s_min < SPARTAN_EPS) return -3;
   *sin_theta = sqrt(1 - s_min * s_min);
 
   /* Step 4: the rotation, J transposed times Q.
@@ -676,7 +679,7 @@ int epoch_map(const OjaPCA *to, const OjaPCA *from, double *scratch,
  *   largest entry of each row positive leaves about half of all pairs
  *   reflected, which is what doing nothing leaves.
  */
-int basis_det_sign(const OjaPCA *to, const OjaPCA *from, double *scratch) {
+int basis_det_sign(const OjaPCA* to, const OjaPCA* from, double* scratch) {
   if (!scratch || !to || !from || !to->v || !from->v) {
     return 0;
   }
@@ -705,12 +708,10 @@ int basis_det_sign(const OjaPCA *to, const OjaPCA *from, double *scratch) {
        something that is zero or nearly so. */
     int piv = c;
     for (int r = c + 1; r < k; r++) {
-      if (fabs(scratch[r * k + c]) > fabs(scratch[piv * k + c]))
-        piv = r;
+      if (fabs(scratch[r * k + c]) > fabs(scratch[piv * k + c])) piv = r;
     }
 
-    if (fabs(scratch[piv * k + c]) < SPARTAN_EPS)
-      return 0;
+    if (fabs(scratch[piv * k + c]) < SPARTAN_EPS) return 0;
 
     if (piv != c) {
       for (int j = 0; j < k; j++) {
@@ -721,8 +722,7 @@ int basis_det_sign(const OjaPCA *to, const OjaPCA *from, double *scratch) {
       sign = -sign;
     }
 
-    if (scratch[c * k + c] < 0.0)
-      sign = -sign;
+    if (scratch[c * k + c] < 0.0) sign = -sign;
 
     /* Clear below the pivot so the next column's pivot is honest. */
     for (int r = c + 1; r < k; r++) {
@@ -759,12 +759,14 @@ int basis_det_sign(const OjaPCA *to, const OjaPCA *from, double *scratch) {
  *   EVERY output coordinate unbounded and the bound collapses to zero, so
  *   they are clipped to [-x_max, x_max]. The clip is not a heuristic: a
  *   basis row has length one, so a projection can never exceed the length
- *   of the window, and after z-norm the window has length sqrt(m). Pass
- *   x_max = 2 * sqrt(m), which also covers the running mean that is
- *   subtracted before projecting.
+ *   of the window. Words are projections of the z-normed window itself,
+ *   nothing subtracted, and each channel slice z-normed to population
+ *   std has length sqrt(m_time) (less by the eps in the divisor, 0 for a
+ *   constant slice), so the whole window has length at most sqrt(m).
+ *   Pass x_max = sqrt(m).
  */
-void word_box(const int *word, const double *bkpt, const int *alphabet, int k,
-              double x_max, double *lo, double *hi) {
+void word_box(const int* word, const double* bkpt, const int* alphabet, int k,
+              double x_max, double* lo, double* hi) {
   for (int j = 0; j < k; j++) {
     int s = word[j];
     if (s == 0) {
@@ -808,8 +810,8 @@ void word_box(const int *word, const double *bkpt, const int *alphabet, int k,
  *   output coordinate reads every input coordinate, so writing in place
  *   feeds half-updated values back into the sum.
  */
-void box_through(const double *map, const double *lo, const double *hi, int k,
-                 double *out_lo, double *out_hi) {
+void box_through(const double* map, const double* lo, const double* hi, int k,
+                 double* out_lo, double* out_hi) {
   for (int i = 0; i < k; i++) {
     double acc_lo = 0.0;
     double acc_hi = 0.0;
@@ -849,14 +851,13 @@ void box_through(const double *map, const double *lo, const double *hi, int k,
  *   rather than after, or it returns NaN.
  *   For a live query x_norm is exact and free. For a stored word the
  *   window is gone, so the caller passes the same upper bound word_box
- *   clips with, 2 * sqrt(m), which keeps the result an over-estimate and
+ *   clips with, sqrt(m), which keeps the result an over-estimate and
  *   therefore the bound valid.
  */
-double residual_len(const double *y, int k, double x_norm) {
+double residual_len(const double* y, int k, double x_norm) {
   double y_sq = dot_product(y, y, (size_t)k);
   double diff = x_norm * x_norm - y_sq;
-  if (diff < 0.0)
-    diff = 0.0;
+  if (diff < 0.0) diff = 0.0;
   return sqrt(diff);
 }
 /*
@@ -890,16 +891,14 @@ double residual_len(const double *y, int k, double x_norm) {
  *   A position with 0 bits contributes exactly zero and always has: its
  *   single cell is the whole line, so the two intervals always overlap.
  */
-double cross_epoch_mindist(const double *q_lo, const double *q_hi,
-                           const double *c_lo, const double *c_hi, int k,
+double cross_epoch_mindist(const double* q_lo, const double* q_hi,
+                           const double* c_lo, const double* c_hi, int k,
                            double sin_theta, double r) {
   double sum = 0.0;
   for (int i = 0; i < k; i++) {
     double gap = 0.0;
-    if (c_lo[i] - q_hi[i] > gap)
-      gap = c_lo[i] - q_hi[i];
-    if (q_lo[i] - c_hi[i] > gap)
-      gap = q_lo[i] - c_hi[i];
+    if (c_lo[i] - q_hi[i] > gap) gap = c_lo[i] - q_hi[i];
+    if (q_lo[i] - c_hi[i] > gap) gap = q_lo[i] - c_hi[i];
     sum += gap * gap;
   }
   double dist = sqrt(sum) - sin_theta * r;
@@ -954,8 +953,8 @@ double cross_epoch_mindist(const double *q_lo, const double *q_hi,
  *   oja_orthonormality_error on it is the test that the construction holds,
  *   so do not straighten it first or the test proves nothing.
  */
-int subspace_advance(const OjaPCA *from, const OjaPCA *to, double f,
-                     OjaPCA *out, double *scratch) {
+int subspace_advance(const OjaPCA* from, const OjaPCA* to, double f,
+                     OjaPCA* out, double* scratch) {
   if (!from || !to || !out || !scratch) {
     return -1;
   }
@@ -978,11 +977,11 @@ int subspace_advance(const OjaPCA *from, const OjaPCA *to, double f,
   int k = from->k;
   int m = from->m;
 
-  double *m_buf = scratch;                     /* k*k, the overlap table */
-  double *jacc = &scratch[(size_t)k * k];      /* k*k, accumulated rotations */
-  double *sv = &scratch[2 * (size_t)k * k];    /* k, the cosines */
-  double *a = &scratch[2 * (size_t)k * k + k]; /* m, a principal direction */
-  double *b = &a[m];                           /* m, its partner */
+  double* m_buf = scratch;                     /* k*k, the overlap table */
+  double* jacc = &scratch[(size_t)k * k];      /* k*k, accumulated rotations */
+  double* sv = &scratch[2 * (size_t)k * k];    /* k, the cosines */
+  double* a = &scratch[2 * (size_t)k * k + k]; /* m, a principal direction */
+  double* b = &a[m];                           /* m, its partner */
 
   /* The overlap table, exactly as epoch_map builds it. */
   for (int i = 0; i < k; i++) {
@@ -1010,10 +1009,8 @@ int subspace_advance(const OjaPCA *from, const OjaPCA *to, double f,
 
   for (int j = 0; j < k; j++) {
     double cos_t = sv[j];
-    if (cos_t > 1.0)
-      cos_t = 1.0;
-    if (cos_t < 0.0)
-      cos_t = 0.0;
+    if (cos_t > 1.0) cos_t = 1.0;
+    if (cos_t < 0.0) cos_t = 0.0;
 
     for (int i = 0; i < m; i++) {
       a[i] = 0.0;
@@ -1022,8 +1019,8 @@ int subspace_advance(const OjaPCA *from, const OjaPCA *to, double f,
     for (int t = 0; t < k; t++) {
       double ca = jacc[j * k + t];
       double cb = m_buf[j * k + t] / sv[j];
-      const double *fr = &from->v[t * m];
-      const double *tr = &to->v[t * m];
+      const double* fr = &from->v[t * m];
+      const double* tr = &to->v[t * m];
       for (int i = 0; i < m; i++) {
         a[i] += ca * fr[i];
         b[i] += cb * tr[i];
@@ -1031,7 +1028,7 @@ int subspace_advance(const OjaPCA *from, const OjaPCA *to, double f,
     }
 
     double sin_t = sqrt(1.0 - cos_t * cos_t);
-    double *dst = &out->v[j * m];
+    double* dst = &out->v[j * m];
 
     /* Nothing to rotate toward, and w would be 0/0. */
     if (sin_t < SPARTAN_EPS) {
@@ -1052,40 +1049,151 @@ int subspace_advance(const OjaPCA *from, const OjaPCA *to, double f,
 
   return 0;
 }
+/* ---------------- the epoch-0 basis ---------------- */
+
+/*
+ * The k leading directions of a block of windows, by orthogonal iteration:
+ *
+ *   V <- orth( (V X^T) X + mu V )      repeated until span(V) stops moving
+ *
+ * Power iteration on the covariance done k directions at once, without ever
+ * forming the m x m covariance: a pass costs about 2*k*n*m multiply-adds and
+ * k*n + k*m extra doubles, so it stays cheap when m is large (multivariate).
+ * The span converges by a factor lambda_{k+1} / lambda_k per pass.
+ *
+ * X is used CENTRED by its own row mean c, as PCA is defined, without
+ * writing a centred copy: with X~ = X - 1 c^T,
+ *
+ *   V X~^T = V X^T - (V c) 1^T       and       A X~ = A X - (A 1) c^T
+ *
+ * so a pass costs k*m more multiply-adds for V c, nothing per row. The
+ * caller passes the windows exactly as the words see them (z-normed,
+ * nothing subtracted) and gets the PCA of their spread around their mean.
+ *
+ * mu is a tiny shift, 1e-9 times the total energy of X~. It changes no
+ * eigenvector, and it keeps a row from collapsing to zero when the windows
+ * span fewer than k directions (a clean signal with too few parts): the
+ * extra rows then settle on arbitrary directions instead of vanishing.
+ *
+ * X      n rows of m, the windows as written, row r at X[r*m]; read only
+ * n      rows, must be at least k
+ * p      in: the starting basis, k orthonormal rows (the warm-up Oja basis);
+ *        out: the k leading directions, orthonormal
+ *
+ * Returns the passes taken, -1 on a bad argument or failed allocation, -2 if
+ * the span had not settled after WARM_PCA_MAX_PASSES. On -2 the result is
+ * still orthonormal and usable, only not fully converged.
+ *
+ * Edge cases:
+ *   Rows come out in no particular order, and inside a pair of equal
+ *   eigenvalues at any rotation within the pair. The caller sorts by variance
+ *   (build_dictionary does); only the span matters.
+ *   So convergence is tested on the SPAN, k - ||V_new V_old^T||_F^2 [no unit],
+ *   which is 0 when the two spans are equal. A per-row test would never pass
+ *   inside an equal pair, whose rows keep rotating and never need to stop.
+ */
+int warm_pca(const double* X, int n, int m, OjaPCA* p) {
+  if (!X || !p || !p->v || m != p->m || n < p->k) return -1;
+  int k = p->k;
+  double* A = malloc((size_t)k * n * sizeof(double));   /* V X~^T, k x n */
+  double* old = malloc((size_t)k * m * sizeof(double)); /* V before the pass */
+  double* c = calloc((size_t)m, sizeof(double));        /* row mean of X */
+  double* vc = malloc((size_t)k * sizeof(double));      /* V c, k */
+  if (!A || !old || !c || !vc) {
+    free(A);
+    free(old);
+    free(c);
+    free(vc);
+    return -1;
+  }
+
+  // c = (1/n) sum_r x_r
+  for (int r = 0; r < n; r++)
+    for (int i = 0; i < m; i++) c[i] += X[(size_t)r * m + i];
+  for (int i = 0; i < m; i++) c[i] /= n;
+
+  // energy = sum_r ||x_r - c||^2 [squared units of X]
+  double energy = 0.0;
+  for (int r = 0; r < n; r++)
+    for (int i = 0; i < m; i++) {
+      double d = X[(size_t)r * m + i] - c[i];
+      energy += d * d;
+    }
+  double mu = 1e-9 * energy;
+
+  int pass;
+  for (pass = 1; pass <= WARM_PCA_MAX_PASSES; pass++) {
+    memcpy(old, p->v, (size_t)k * m * sizeof(double));
+
+    // A = V X~^T = V X^T - (V c) 1^T: each centred window along each row
+    for (int a = 0; a < k; a++) {
+      vc[a] = dot_product(&old[a * m], c, m);
+      for (int r = 0; r < n; r++)
+        A[a * n + r] = dot_product(&old[a * m], &X[(size_t)r * m], m) - vc[a];
+    }
+
+    // V = A X~ + mu V = A X - (A 1) c^T + mu V
+    for (int a = 0; a < k; a++) {
+      double* va = &p->v[a * m];
+      double a_sum = 0.0; /* A 1, the row sum of A */
+      for (int i = 0; i < m; i++) va[i] = mu * old[a * m + i];
+      for (int r = 0; r < n; r++) {
+        double w = A[a * n + r];
+        const double* xr = &X[(size_t)r * m];
+        a_sum += w;
+        for (int i = 0; i < m; i++) va[i] += w * xr[i];
+      }
+      for (int i = 0; i < m; i++) va[i] -= a_sum * c[i];
+    }
+    gram_schmidt(p);
+
+    // How much of the old span the new one still holds
+    double kept = 0.0;
+    for (int a = 0; a < k; a++)
+      for (int b = 0; b < k; b++) {
+        double d = dot_product(&p->v[a * m], &old[b * m], m);
+        kept += d * d;
+      }
+    if (k - kept < WARM_PCA_TOL) break;
+  }
+
+  free(A);
+  free(old);
+  free(c);
+  free(vc);
+  return pass > WARM_PCA_MAX_PASSES ? -2 : pass;
+}
+
 /* ---------------- from numbers to letters ---------------- */
 
-static int cmp_double(const void *a, const void *b) {
-  double x = *(const double *)a;
-  double y = *(const double *)b;
-  if (x < y)
-    return -1;
-  if (x > y)
-    return 1;
+static int cmp_double(const void* a, const void* b) {
+  double x = *(const double*)a;
+  double y = *(const double*)b;
+  if (x < y) return -1;
+  if (x > y) return 1;
   return 0;
 }
 
-void project(const OjaPCA *p, const double *xc, double *y) {
+void project(const OjaPCA* p, const double* x, double* y) {
   for (int j = 0; j < p->k; j++) {
-    y[j] = dot_product(xc, &p->v[j * p->m], p->m);
+    y[j] = dot_product(x, &p->v[j * p->m], p->m);
   }
 }
 
-void compute_breakpoints(const double *proj, int n, int k, const int *alphabet,
-                         double *bkpt) {
-  double *col = calloc((size_t)n, sizeof(double));
-  if (!col)
-    return;
+void compute_breakpoints(const double* proj, int n, int k, const int* alphabet,
+                         double* bkpt) {
+  double* col = calloc((size_t)n, sizeof(double));
+  if (!col) return;
   for (int j = 0; j < k; j++) {
     double target_depth = (double)n / alphabet[j];
-    for (int r = 0; r < n; r++)
-      col[r] = proj[r * k + j];
+    for (int r = 0; r < n; r++) col[r] = proj[r * k + j];
     qsort(col, n, sizeof(double), cmp_double);
     double bin_index = 0.0;
     for (int bp = 0; bp < alphabet[j] - 1; bp++) {
       bin_index += target_depth;
       bkpt[MAX_ALPHABET * j + bp] = col[(
-          int)bin_index]; // Stride rows by MAX_ALPHABET regardless of
-                          // alphabet[j] so digitize can index rows uniformly
+          int)bin_index];  // Stride rows by MAX_ALPHABET regardless of
+                           // alphabet[j] so digitize can index rows uniformly
     }
     /* Last slot is a wall the search always stops at. */
     bkpt[MAX_ALPHABET * j + (alphabet[j] - 1)] = DBL_MAX;
@@ -1097,7 +1205,7 @@ void compute_breakpoints(const double *proj, int n, int k, const int *alphabet,
    nothing about how important they are. The spread of the projected values
    does, and we already collect those during warm-up, so this costs nothing
    extra. */
-void estimate_eigenvalues(const double *proj, int n, int k, double *ev) {
+void estimate_eigenvalues(const double* proj, int n, int k, double* ev) {
   double sum = 0.0;
   for (int j = 0; j < k; j++) {
     double col_sum = 0.0;
@@ -1125,8 +1233,8 @@ void estimate_eigenvalues(const double *proj, int n, int k, double *ev) {
   }
 }
 
-void digitize(const double *y, const double *bkpt, int k, const int *alphabet,
-              int *word) {
+void digitize(const double* y, const double* bkpt, int k, const int* alphabet,
+              int* word) {
   for (int j = 0; j < k; j++) {
     int s = 0;
     while (s < alphabet[j] - 1 && y[j] > bkpt[j * MAX_ALPHABET + s]) {
@@ -1147,8 +1255,8 @@ static double regularization_term(int x, double ev_value, int ref_bit,
   return -lamda * (double)(dev * dev) * ev_value;
 }
 
-double daa_score(const double *ev, int k, int total_bits, double lamda,
-                 const int *ref_bits, const int *bits) {
+double daa_score(const double* ev, int k, int total_bits, double lamda,
+                 const int* ref_bits, const int* bits) {
   int avg_bit = total_bits / k;
   double s = 0.0;
   for (int i = 0; i < k; i++) {
@@ -1158,162 +1266,136 @@ double daa_score(const double *ev, int k, int total_bits, double lamda,
   return s;
 }
 
-/* The unreachable marker. It has to be a value that cannot be produced by
-   adding a gain to it, which -1e9 is not: -1e9 + 0.125 beats -1e9 and the cell
-   gets filled from a path that does not exist. Compared with ==, never <. */
-#define DAA_UNREACHABLE (-DBL_MAX)
+/* The bid for the bit taking a position from x to x+1, from the closed form
+ *   ev * dg(x),   dg(x) = g(x+1) - g(x) = 1 - lamda * (2 * (x - ref) + 1)
+ * and NOT as the difference of two daa_score terms. The difference of two
+ * scores carries rounding of ~1e-17, so a bid that is exactly 0 (importance
+ * 0, or lamda = 1 at ref) came out as +-1e-17 and the ties were decided by
+ * noise: measured, 3890 of 237833 random splits not non-increasing. The
+ * closed form gives an exact 0 there. */
+static double bit_bid(int x, double ev_value, int ref_bit, double lamda) {
+  return ev_value * (1.0 - lamda * (2.0 * (x - ref_bit) + 1.0));
+}
 
-int daa_allocate(const double *ev, int k, int total_bits, double lamda,
-                 const int *ref_bits, int *bits, double *score) {
-  int N = total_bits;
-  int cols = N + 1;
-  int min_bit = 0;
-  if (k <= 0 || N < 1)
-    return -1;
-
-  /* Whole division on purpose. spartan.py uses int(N/K), so a budget that
-     does not divide evenly puts the reference point slightly low, and we
-     copy that rather than "fix" it. */
-  int avg_bit = N / k;
-
-  /* Two real ceilings and nothing else: what is left if everyone else takes
-     the minimum, and what one position can spend before its alphabet hits
-     MAX_ALPHABET.
-
-     The reference caps at ev_max * N instead, which compares a share of the
-     BIT budget against a share of the VARIANCE. Those are not the same
-     currency: bits are logarithmic, variance is not. In batch, with a steep
-     spectrum, the cap never binds. In a stream the spectrum flattens, the
-     cap tightens, and it starts excluding the optimum exactly when the
-     decision gets hard. */
-
-  int max_bit = N - (k - 1) * min_bit;
-  if (max_bit > MAX_BITS)
-    max_bit = MAX_BITS;
-
-  /* No shortcut for N == k: with a zero floor the even split is no longer
-     automatically best. ev (0.80, 0.15, 0.05) with N = k = 3 prefers 2 1 0.
-   */
-  double *DP = malloc((size_t)(k + 1) * cols * sizeof(double));
-  int *alloc = malloc((size_t)(k + 1) * cols * sizeof(int));
-  if (!DP || !alloc) {
-    free(DP);
-    free(alloc);
-    return -1;
+/*
+ * Whether the greedy allocation is the proven optimum for these settings.
+ *
+ * Greedy is exact for a separable concave objective under one budget (the
+ * appendix of the paper). The non-increasing order across positions is NOT
+ * part of that structure; greedy keeps it by itself only when every bit of
+ * the budget is bought at a non-negative marginal gain. The marginal gain of
+ * the bit taking a position from x to x+1 is
+ *
+ *   ev_j * dg(x),   dg(x) = 1 - lamda * (2 * (x - ref) + 1)      [no unit]
+ *
+ * and ev_j >= 0, so it is non-negative exactly where dg(x) >= 0. Counting
+ * those levels over every position, up to MAX_BITS, gives how many bits can
+ * be bought that way; the budget must not exceed it.
+ *
+ *   lamda <= 1                    always holds (dg(ref) = 1 - lamda >= 0)
+ *   lamda  > 1, k divides budget  holds (every position needs only ref)
+ *   lamda  > 1 otherwise          fails: the leftover bits go to the LEAST
+ *                                 important positions. Measured: on random
+ *                                 sorted importances greedy then beats the
+ *                                 non-increasing optimum in 2 of 3 cases
+ *
+ * k, total_bits, lamda, ref_bits as in daa_allocate.
+ * Returns 1 if the condition holds, 0 if not.
+ */
+int daa_exact(int k, int total_bits, double lamda, const int* ref_bits) {
+  if (k <= 0) return 0;
+  int avg_bit = total_bits / k;
+  long cap = 0; /* bits buyable at a non-negative marginal gain */
+  for (int j = 0; j < k; j++) {
+    int ref = ref_bits ? ref_bits[j] : avg_bit;
+    for (int x = 0; x < MAX_BITS; x++)
+      if (1.0 - lamda * (2.0 * (x - ref) + 1.0) >= 0.0) cap++;
   }
+  return total_bits <= cap;
+}
 
-  /* Every cell starts unreachable. The one reachable start is "no positions
-     filled, no bits spent". The companion table starts at the full budget,
-     which acts as "no limit yet" for the never-increase test below. */
-  for (int i = 0; i <= k; i++) {
-    for (int j = 0; j < cols; j++) {
-      DP[i * cols + j] = DAA_UNREACHABLE;
-      alloc[i * cols + j] = N;
-    }
-  }
-  DP[0] = 0.0;
+/*
+ * The bit split, by the auction: the budget is sold one bit at a time to
+ * the position that bids most for it, its importance times the gain of one
+ * more bit,
+ *
+ *   bid_j = ev_j * dg(b_j),   dg(x) = 1 - lamda * (2 * (x - ref) + 1)
+ *
+ * Every bid falls as its owner accumulates (g is concave), so this is the
+ * classical greedy allocation, exact for a separable concave objective
+ * under one budget. Refused outside daa_exact, where it is not.
+ *
+ * Ties: equal bids happen exactly, at importance 0 (every bid is 0) and at
+ * dg = 0 (lamda = 1 at ref). They go to the position holding FEWER bits,
+ * then to the lower index. With importances in descending order this keeps
+ * the split non-increasing; a plain lowest-index rule would pile the
+ * leftover bits on the first zero-importance position, same score, wrong
+ * order.
+ *
+ * Cost: total_bits passes over k positions, O(k * total_bits), no memory.
+ *
+ * ev          k importances, descending (build_dictionary sorts them)
+ * k           positions
+ * total_bits  the budget, spent exactly
+ * lamda       pull toward ref [no unit]
+ * ref_bits    k reference bits, or NULL for total_bits / k everywhere
+ *             (whole division, as spartan.py does)
+ * bits        output, k entries
+ * score       output, daa_score of the result; may be NULL
+ *
+ * Returns 0, or -1 on a bad argument, a budget no split can spend
+ * (above k * MAX_BITS), or settings outside daa_exact.
+ */
+int daa_allocate(const double* ev, int k, int total_bits, double lamda,
+                 const int* ref_bits, int* bits, double* score) {
+  if (!ev || !bits || k <= 0 || total_bits < 1 || total_bits > k * MAX_BITS ||
+      !daa_exact(k, total_bits, lamda, ref_bits))
+    return -1;
+  int avg_bit = total_bits / k;
 
-  for (int i = 1; i <= k; i++) {
-    /* This is the addition: with no reference given we fall back to the
-       even split and behave exactly like spartan.py. With one given, the
-       split prefers to stay where it was and only moves when the gain is
-       real. */
-    int ref = ref_bits ? ref_bits[i - 1] : avg_bit;
+  for (int j = 0; j < k; j++) bits[j] = 0;
 
-    for (int j = 0; j < cols; j++) {
-      double best = DAA_UNREACHABLE;
-
-      for (int x = min_bit; x <= max_bit; x++) {
-        if (j - x < 0)
-          continue;
-
-        /* No position may get more bits than the one before it. Allowed
-           only because the directions arrive sorted from most to least
-           important.
-         */
-        if (x > alloc[(i - 1) * cols + (j - x)])
-          continue; // Enforce monotonic non-increasing bits (b_i <= b_{i-1})
-                    // across sorted eigenvalues to prune search space
-
-        /* == and not <, because adding a gain to the sentinel would beat it
-         */
-        if (DP[(i - 1) * cols + (j - x)] == DAA_UNREACHABLE)
-          continue;
-
-        double cr = DP[(i - 1) * cols + (j - x)] + x * ev[i - 1] +
-                    regularization_term(x, ev[i - 1], ref, lamda);
-
-        if (cr > best) {
-          best = cr;
-          alloc[i * cols + j] = x;
-          DP[i * cols + j] = cr;
-        }
+  for (int sold = 0; sold < total_bits; sold++) {
+    int win = -1;
+    double best = 0.0;
+    for (int j = 0; j < k; j++) {
+      if (bits[j] >= MAX_BITS) continue;
+      int ref = ref_bits ? ref_bits[j] : avg_bit;
+      double bid = bit_bid(bits[j], ev[j], ref, lamda);
+      // higher bid wins; on an exact tie, fewer bits, then lower index
+      // (j only grows, so a later j never wins a full tie)
+      if (win < 0 || bid > best || (bid == best && bits[j] < bits[win])) {
+        win = j;
+        best = bid;
       }
     }
+    bits[win]++;  // win >= 0: total_bits <= k * MAX_BITS leaves a free slot
   }
-  /* No feasible split reaches the full budget. Say so instead of handing
-     back the sentinel as if it were a score. */
-  if (DP[k * cols + N] == DAA_UNREACHABLE) {
-    free(DP);
-    free(alloc);
-    return -1;
-  }
-  if (score)
-    *score = DP[k * cols + N];
 
-  /* Walk back from the last position. Whatever is left over goes to the
-     first one. Same result as the reference, which builds the list
-     backwards and then flips it. */
-  int unused_bit = N;
-  for (int i = k; i >= 2; i--) {
-    bits[i - 1] = alloc[i * cols + unused_bit];
-    unused_bit -= bits[i - 1];
-  }
-  bits[0] = unused_bit;
-
-  free(DP);
-  free(alloc);
-
-  int sum = 0;
-  for (int i = 0; i < k; i++) {
-    if (bits[i] < min_bit || bits[i] > max_bit)
-      return -1;
-    sum += bits[i];
-  }
-  if (sum != N)
-    return -1;
-
+  if (score) *score = daa_score(ev, k, total_bits, lamda, ref_bits, bits);
   return 0;
 }
 
-static double position_gain(int x, double ev_value, int ref_bit, double lamda) {
-  return x * ev_value + regularization_term(x, ev_value, ref_bit, lamda);
-}
-
-double daa_gap(const double *ev, int k, int total_bits, double lamda,
-               const int *ref_bits, const int *bits) {
+double daa_gap(const double* ev, int k, int total_bits, double lamda,
+               const int* ref_bits, const int* bits) {
   int avg_bit = total_bits / k;
   int min_bit = 0;
   int max_bit = total_bits - (k - 1) * min_bit;
-  if (max_bit > MAX_BITS)
-    max_bit = MAX_BITS;
+  if (max_bit > MAX_BITS) max_bit = MAX_BITS;
   double best_bid = -DBL_MAX;
   double best_ask = DBL_MAX;
   for (int j = 0; j < k; j++) {
     // Per position, inside the loop. NULL falls back to the even split, which
     // is exactly what daa_allocate does
     int ref = ref_bits ? ref_bits[j] : avg_bit;
-    double cur_gain = position_gain(bits[j], ev[j], ref, lamda);
     if (bits[j] < max_bit) {
-      double up = position_gain(bits[j] + 1, ev[j], ref, lamda) - cur_gain;
-      if (up > best_bid)
-        best_bid = up;
+      double up = bit_bid(bits[j], ev[j], ref, lamda);
+      if (up > best_bid) best_bid = up;
     }
     if (bits[j] > min_bit) {
-      double down = cur_gain - position_gain(bits[j] - 1, ev[j], ref, lamda);
+      double down = bit_bid(bits[j] - 1, ev[j], ref, lamda);
 
-      if (down < best_ask)
-        best_ask = down;
+      if (down < best_ask) best_ask = down;
     }
   }
 
@@ -1321,8 +1403,13 @@ double daa_gap(const double *ev, int k, int total_bits, double lamda,
     return 0.0;
   }
 
+  // Above SPARTAN_EPS, not above 0. The bids come from the closed form, so
+  // a tie is an exact 0 here; the margin is a second guard, for importances
+  // that differ only by rounding. Before both, a gap of ~1e-17 at lamda = 1
+  // opened type 1 epochs that re-solved to the same split (measured: 4 on
+  // tsb_drift, total_bits 17)
   double gap = best_bid - best_ask;
-  if (gap <= 0) {
+  if (gap <= SPARTAN_EPS) {
     return 0;
   }
   return gap;
@@ -1331,6 +1418,20 @@ double daa_gap(const double *ev, int k, int total_bits, double lamda,
 
 Config config_default(int k, int m) { return config_default_mv(k, 1, m); }
 
+/* The defaults. This is the ONLY place a default exists: the settings file
+ * overrides any of them, and the tools read what a run used from the
+ * settings.cfg the C writes, never from a copy of these.
+ *
+ *   ring_w = 512   a cut point is a quantile, and 10 points per cell of the
+ *                  largest alphabet is 10 * MAX_ALPHABET = 160; 512 is the
+ *                  next power of two past three times that
+ *   warmup = ring_w  the epoch-0 basis is exact PCA on the warm-up windows
+ *                  (warm_pca), so the warm-up needs only enough rows for the
+ *                  cut points, the same number a re-cut uses. Measured on the
+ *                  three tsb streams: 256 already gave no false epochs
+ *   cross_epoch = search   tight at every angle; on tsb_drift_strong TLB
+ *                  0.87 of batch all against 0.55 for box with stored r
+ */
 Config config_default_mv(int k, int d, int m_time) {
   Config c = {
       .k = k,
@@ -1341,15 +1442,17 @@ Config config_default_mv(int k, int d, int m_time) {
       .step = 0.24,
       .beta = 0.1,
       .gs_period = 5,
-      .warmup = 10,
       .total_bits = 2 * k,
       .lambda = 0.5,
       .theta_threshold_deg = 45.0,
   };
-  c.ring_w = c.warmup;
+  c.ring_w = 512;
+  c.warmup = c.ring_w;
   c.angle_period = c.gs_period;
   c.lr = c.step / c.m;
   c.theta_threshold = c.theta_threshold_deg * SPARTAN_DEG_TO_RAD;
   c.freeze_ahead = 0.0;
+  c.cross_epoch = CROSS_EPOCH_SEARCH;
+  c.level_letters = 0;
   return c;
 }

@@ -4,3 +4,12 @@ scratch/
 __pycache__/
 venv/
 *.pyc
+
+# generated or downloaded data, rebuilt by make data or fetched again
+tests/*/data/
+tests/*/ref/
+tests/*/truth/
+tests/real/
+
+# sweep results
+out/
