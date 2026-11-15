@@ -197,13 +197,17 @@ displacement was the estimator rather than the data.
   computed from. This is the largest piece of state, `ring_window · m` doubles, and it
   does not grow with the stream.
 
-### Optional level letters
+### Raw windows (`window_znorm = false`)
 
-z-norm erases each window's mean and spread, so a level shift or an amplitude jump is
-invisible to the words. For anomaly detection, `level_letters = true` appends, per
-channel, the mean and the spread taken **before** z-norm as two extra letters, cut once
-from the warm-up. They are outside the DAA budget and do not touch the PCA letters. Off
-by default: for similarity search the z-normed distance is the target.
+For anomaly detection on the protocol of the SPARTAN paper (Task III) the windows are
+not z-normed at all: words, rings and cut points use the raw window, and level and
+amplitude stay in the PCA letters. The letters do not change under a shift or scale of
+the whole series (equi-depth cut points move with the projections, PCA centres), so no
+normalisation with future data is needed; Oja alone gets a causal scale, the running RMS
+of its own input, capped at the largest step a z-normed window takes. `make affine`
+checks it: words, epochs and splits identical for x and a*x + b. Within-epoch MINDIST
+and the search form stay lower bounds; box and join assume |x| <= sqrt(m), so config
+refuses `cross_epoch = box` with it.
 
 ---
 
@@ -241,6 +245,7 @@ make truth        batch PCA on the stream, and the angle to what was planted
 make sweep        the sensitivity sweep (datasets and levels: top of tools/sweep.py)
 make sweep-plan   what the sweep would run, running only the baselines
 make check        sanitized run on CFG, diff against the golden files
+make affine       raw windows: words identical for x and a*x + b, both designs
 make golden       regenerate the golden files for CFG, after reading the diff
 make clean        remove build/ and every tests/*/out/ (keeps out/, the sweeps)
 ```
@@ -288,7 +293,7 @@ used is in the run's `settings.cfg`.
 | `ring_window` | windows in the ring a type 2 epoch is computed from, and projections in the type 1 ring |
 | `warmup` | windows before the first word, the epoch-0 PCA and cut points; default `ring_window` |
 | `cross_epoch` | `search` or `box`: how a live query is bounded against an older epoch |
-| `level_letters` | `true` or `false`: append each channel's mean and spread as two extra letters |
+| `window_znorm` | `true` (default) or `false`: z-norm each window, or keep it raw (Task III) |
 | `freeze_ahead` | design A only: how far past the data a staged candidate is frozen |
 | `words` | where the words go, `-` for stdout |
 | `out_dir` | folder for the per-epoch files; empty writes none, and the folder must exist |
@@ -305,7 +310,6 @@ With `out_dir` set:
 | `epochs.csv` | one line per epoch: first window it writes, the angle it was cut at, the staleness of the incoming basis, the objective its split reached, its type (0 warm-up, 1 new split, 2 new directions) |
 | `dict_<n>.csv` | importances, bits, alphabet sizes and cut points, one row per position |
 | `basis_<n>.csv` | the directions that wrote this epoch's words, one row each |
-| `levels.csv` | the level-letter cut points, only with `level_letters = true` |
 
 `epochs.csv` has no "last window" column by design. An epoch ends where the next one
 begins, and the last one ends with the stream, so no field has to be revisited after it

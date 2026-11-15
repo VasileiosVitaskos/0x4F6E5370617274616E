@@ -9,6 +9,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <float.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,14 +28,14 @@
  * STAGING_A: the previous design, kept compiled out for comparison on real
  * data. Build it with the Makefile's flags plus the switch (CFLAGS+= on the
  * make command line would REPLACE the flags, losing -O2 and the warnings):
- *     make clean && make CFLAGS="-O2 -Wall -Wextra -Wshadow -std=c11
- * -DSTAGING_A" It predicted the crossing from the rate of the angle, froze a
- * candidate at a warn, filled a ring of projections on it and promoted it at
- * the crossing. Measured on tsb_drift_strong: an early warn froze the candidate
- * 2500 windows before the crossing, so it took over 44.6 deg behind the data
- * and a second re-basing followed 165 windows late. Cost of the default: the
- * ring holds windows, ring_w x m doubles (1 MB at 512 x 256), instead of
- * projections, ring_w x k.
+ *     make A        -> build/spartan_A, next to build/spartan_toy (B)
+ * It predicted the crossing from the rate
+ * of the angle, froze a candidate at a warn, filled a ring of projections on
+ * it and promoted it at the crossing. Measured on tsb_drift_strong: an early
+ * warn froze the candidate 2500 windows before the crossing, so it took over
+ * 44.6 deg behind the data and a second re-basing followed 165 windows late.
+ * Cost of the default: the ring holds windows, ring_w x m doubles (1 MB at
+ * 512 x 256), instead of projections, ring_w x k.
  */
 #ifdef STAGING_A
 // How fast the smoothed angle rate forgets. Memory is about 1/this readings,
@@ -59,39 +60,42 @@ static double now_seconds(void) {
 
 // Open a destination file, or hand back stdout for "-"; the flag tells the
 // caller whether it owns the handle and must close it
-static FILE* open_sink(const char* path, int* owned) {
+static FILE *open_sink(const char *path, int *owned) {
   *owned = 0;
-  if (strcmp(path, "-") == 0) return stdout;
-  FILE* f = fopen(path, "w");
-  if (f) *owned = 1;
+  if (strcmp(path, "-") == 0)
+    return stdout;
+  FILE *f = fopen(path, "w");
+  if (f)
+    *owned = 1;
   return f;
 }
 
 // Persist the frozen dictionary as data; an analysis script needs exactly this
 // to recompute distances without re-running the C
-static int write_dictionary(const char* path, const Config* cfg,
-                            const double* ev, const int* bits,
-                            const int* alphabet, const double* bkpt) {
-  FILE* f = fopen(path, "w");
+static int write_dictionary(const char *path, const Config *cfg,
+                            const double *ev, const int *bits,
+                            const int *alphabet, const double *bkpt) {
+  FILE *f = fopen(path, "w");
   if (!f) {
     fprintf(stderr, "Error: Cannot write dictionary to '%s'\n", path);
     return -1;
   }
 
   fprintf(f, "pos,alphabet,bits,ev");
-  for (int b = 0; b < MAX_ALPHABET; b++) fprintf(f, ",bkpt%d", b);
+  for (int b = 0; b < MAX_ALPHABET; b++)
+    fprintf(f, ",bkpt%d", b);
   fprintf(f, "\n");
 
   for (int j = 0; j < cfg->k; j++) {
     fprintf(f, "%d,%d,%d,%.17g", j, alphabet[j], bits[j], ev[j]);
     for (int b = 0; b < MAX_ALPHABET; b++) {
       double v =
-          bkpt[j * MAX_ALPHABET + b];  // Index flat breakpoint table using
-                                       // fixed MAX_ALPHABET row stride
+          bkpt[j * MAX_ALPHABET + b]; // Index flat breakpoint table using
+                                      // fixed MAX_ALPHABET row stride
       if (b >= alphabet[j])
-        fprintf(f, ",");  // slot unused at this position
+        fprintf(f, ","); // slot unused at this position
       else if (v == DBL_MAX)
-        fprintf(f, ",inf");  // the wall the symbol search always stops at
+        fprintf(f, ",inf"); // the wall the symbol search always stops at
       else
         fprintf(f, ",%.17g", v);
     }
@@ -102,7 +106,7 @@ static int write_dictionary(const char* path, const Config* cfg,
   return 0;
 }
 
-static int epoch_path(char* buf, size_t cap, const char* dir, const char* what,
+static int epoch_path(char *buf, size_t cap, const char *dir, const char *what,
                       long n) {
   int len = snprintf(buf, cap, "%s/%s_%ld.csv", dir, what, n);
   if (len < 0 || (size_t)len >= cap) {
@@ -116,8 +120,8 @@ static int epoch_path(char* buf, size_t cap, const char* dir, const char* what,
 /* Writes one basis to a CSV file: one row per direction, m numbers each.
  * Returns 0 on success, -1 if the file could not be opened.
  */
-static int write_basis(const char* path, const OjaPCA* p) {
-  FILE* f = fopen(path, "w");
+static int write_basis(const char *path, const OjaPCA *p) {
+  FILE *f = fopen(path, "w");
   if (!f) {
     fprintf(stderr, "Error: Cannot write basis to '%s'\n", path);
     return -1;
@@ -182,9 +186,9 @@ static int write_basis(const char* path, const OjaPCA* p) {
  *   points of the flipped row move, and they are re-cut by the one function
  *   that makes cut points rather than mirrored by hand.
  */
-static int promote_basis(OjaPCA* frozen, OjaPCA* cand, ProjRing* r,
-                         const int* perm, const int* alphabet, double* bkpt,
-                         double* scratch, int have_prev, long at) {
+static int promote_basis(OjaPCA *frozen, OjaPCA *cand, ProjRing *r,
+                         const int *perm, const int *alphabet, double *bkpt,
+                         double *scratch, int have_prev, long at) {
   int k = cand->k, m = cand->m;
   int in_place = (cand == frozen);
 
@@ -199,11 +203,13 @@ static int promote_basis(OjaPCA* frozen, OjaPCA* cand, ProjRing* r,
     // Parity of a permutation: (k - number of cycles) is even or odd
     int seen[k];
     int cycles = 0;
-    for (int i = 0; i < k; i++) seen[i] = 0;
+    for (int i = 0; i < k; i++)
+      seen[i] = 0;
     for (int i = 0; i < k; i++) {
-      if (seen[i]) continue;
+      if (seen[i])
+        continue;
       cycles++;
-      for (int j = i; !seen[j]; j = perm[j])  // walk the cycle through i
+      for (int j = i; !seen[j]; j = perm[j]) // walk the cycle through i
         seen[j] = 1;
     }
     reflected = (k - cycles) % 2;
@@ -213,10 +219,11 @@ static int promote_basis(OjaPCA* frozen, OjaPCA* cand, ProjRing* r,
 
   if (reflected) {
     int last = k - 1;
-    for (int i = 0; i < m; i++) cand->v[last * m + i] = -cand->v[last * m + i];
+    for (int i = 0; i < m; i++)
+      cand->v[last * m + i] = -cand->v[last * m + i];
     for (int row = 0; row < r->count; row++)
       r->buf[row * k + last] = -r->buf[row * k + last];
-    pring_refresh(r);  // the sums went stale with the column
+    pring_refresh(r); // the sums went stale with the column
     compute_breakpoints(r->buf, r->count, k, alphabet, bkpt);
     fprintf(stderr, "flip,%ld,%d\n", at, last);
   }
@@ -240,12 +247,13 @@ static int promote_basis(OjaPCA* frozen, OjaPCA* cand, ProjRing* r,
  *
  * Returns 0, or -1 if a file could not be written.
  */
-static int record_epoch(const RunOptions* run, FILE* epochs_f,
-                        const Config* cfg, long n, long first, int type,
+static int record_epoch(const RunOptions *run, FILE *epochs_f,
+                        const Config *cfg, long n, long first, int type,
                         double theta, double stale, double score,
-                        const double* ev, const int* bits, const int* alphabet,
-                        const double* bkpt, const OjaPCA* frozen) {
-  if (!run->out_dir[0]) return 0;
+                        const double *ev, const int *bits, const int *alphabet,
+                        const double *bkpt, const OjaPCA *frozen) {
+  if (!run->out_dir[0])
+    return 0;
   char path[512];
   if (epoch_path(path, sizeof(path), run->out_dir, "dict", n) != 0 ||
       write_dictionary(path, cfg, ev, bits, alphabet, bkpt) != 0)
@@ -258,39 +266,9 @@ static int record_epoch(const RunOptions* run, FILE* epochs_f,
   return 0;
 }
 
-/* Writes the level-letter cut points: one row per extra letter, in word
- * order (level0, spread0, level1, spread1, ...), same layout as a dict file
- * minus ev and bits. Fixed for the whole run, so one file, not one per epoch.
- * Returns 0 on success, -1 if the file could not be opened.
- */
-static int write_levels(const char* path, int n_lvl, const int* alphabet,
-                        const double* bkpt) {
-  FILE* f = fopen(path, "w");
-  if (!f) {
-    fprintf(stderr, "Error: Cannot write level cut points to '%s'\n", path);
-    return -1;
-  }
-  fprintf(f, "pos,alphabet");
-  for (int b = 0; b < LEVEL_ALPHABET; b++) fprintf(f, ",bkpt%d", b);
-  fprintf(f, "\n");
-  for (int j = 0; j < n_lvl; j++) {
-    fprintf(f, "%d,%d", j, alphabet[j]);
-    for (int b = 0; b < LEVEL_ALPHABET; b++) {
-      double v = bkpt[j * MAX_ALPHABET + b];
-      if (v == DBL_MAX)
-        fprintf(f, ",inf");
-      else
-        fprintf(f, ",%.17g", v);
-    }
-    fprintf(f, "\n");
-  }
-  fclose(f);
-  return 0;
-}
-
-static int build_dictionary(const Config* cfg, double* proj, int n_proj,
-                            const char* why, int* perm, double* ev, int* bits,
-                            int* alphabet, double* bkpt, double* score) {
+static int build_dictionary(const Config *cfg, double *proj, int n_proj,
+                            const char *why, int *perm, double *ev, int *bits,
+                            int *alphabet, double *bkpt, double *score) {
   estimate_eigenvalues(proj, n_proj, cfg->k, ev);
 
   for (int i = 0; i < cfg->k; i++) {
@@ -301,9 +279,9 @@ static int build_dictionary(const Config* cfg, double* proj, int n_proj,
     int max_idx = i;
     for (int j = i + 1; j < cfg->k; j++) {
       if (ev[perm[j]] >
-          ev[perm[max_idx]]) {  // Indirect selection sort on index array perm
-                                // to rank eigenvalues descending without
-                                // mutating ev yet
+          ev[perm[max_idx]]) { // Indirect selection sort on index array perm
+                               // to rank eigenvalues descending without
+                               // mutating ev yet
         max_idx = j;
       }
     }
@@ -335,8 +313,8 @@ static int build_dictionary(const Config* cfg, double* proj, int n_proj,
       for (int i = 0; i < cfg->k; i++) {
         tmp_row[i] =
             proj[r * cfg->k +
-                 perm[i]];  // Gather column perm[i] into slot i via temporary
-                            // row buffer to avoid overwriting unvisited columns
+                 perm[i]]; // Gather column perm[i] into slot i via temporary
+                           // row buffer to avoid overwriting unvisited columns
       }
       for (int i = 0; i < cfg->k; i++) {
         proj[r * cfg->k + i] = tmp_row[i];
@@ -351,7 +329,8 @@ static int build_dictionary(const Config* cfg, double* proj, int n_proj,
                    &local_score) != 0) {
     return -1;
   }
-  if (score) *score = local_score;
+  if (score)
+    *score = local_score;
   // Step 3: clamp to what digitize can represent, and note the widest
   // alphabet, since that is the one that needs the most rows to resolve
   int max_a = 0;
@@ -379,16 +358,19 @@ static int build_dictionary(const Config* cfg, double* proj, int n_proj,
   compute_breakpoints(proj, n_proj, cfg->k, alphabet, bkpt);
   // Step 6: one log line, so both paths report identically
   fprintf(stderr, "ev       =");
-  for (int j = 0; j < cfg->k; j++) fprintf(stderr, " %.4f", ev[j]);
+  for (int j = 0; j < cfg->k; j++)
+    fprintf(stderr, " %.4f", ev[j]);
   fprintf(stderr, "\nbits     =");
-  for (int j = 0; j < cfg->k; j++) fprintf(stderr, " %d", bits[j]);
+  for (int j = 0; j < cfg->k; j++)
+    fprintf(stderr, " %d", bits[j]);
   fprintf(stderr, "\nalphabet =");
-  for (int j = 0; j < cfg->k; j++) fprintf(stderr, " %d", alphabet[j]);
+  for (int j = 0; j < cfg->k; j++)
+    fprintf(stderr, " %d", alphabet[j]);
   fprintf(stderr, "\nscore    = %.6f\n", local_score);
   return 0;
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   Config cfg;
   RunOptions run;
 
@@ -397,7 +379,8 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "Usage: %s settings-file\n", argv[0]);
     return EXIT_FAILURE;
   }
-  if (config_load(argv[1], &cfg, &run) != 0) return EXIT_FAILURE;
+  if (config_load(argv[1], &cfg, &run) != 0)
+    return EXIT_FAILURE;
   if (strcmp(run.input, "builtin") == 0) {
     // "builtin" is what config_defaults leaves when the file has no input
     fprintf(stderr, "Error: '%s' has no 'input = <data file>' line\n", argv[1]);
@@ -410,47 +393,42 @@ int main(int argc, char* argv[]) {
 
   // Default exit code and safe initialization of pointers and state
   int rc = EXIT_FAILURE;
-  double* win = NULL;
-  double* xc = NULL;
-  double* y = NULL;
-  double* y_cand = NULL;
-  int* word = NULL;
-  double* bkpt = NULL;
-  double* warmup_proj = NULL;
-  double* warm_x = NULL; /* the z-normed warm-up windows, warmup rows of m */
+  double *win = NULL;
+  double *xc = NULL;
+  double *y = NULL;
+  double *y_cand = NULL;
+  int *word = NULL;
+  double *bkpt = NULL;
+  double *warmup_proj = NULL;
+  double *warm_x = NULL; /* the z-normed warm-up windows, warmup rows of m */
 #ifndef STAGING_A
-  double* win_ring = NULL; /* the last ring_w z-normed windows, ring order */
+  double *win_ring = NULL; /* the last ring_w z-normed windows, ring order */
   int win_pos = 0;         /* where the next window goes, in [0, ring_w) */
   int win_count = 0;       /* how many are in, saturating at ring_w */
 #endif
-  double* ev = NULL;
-  int* bits = NULL;
-  int* alphabet_arr = NULL;
-  double* ev_live = NULL;
-  double* angles_scratch = NULL;
-  double* angles = NULL;
-  double* advance_scratch = NULL;
-  int* perm = NULL;
-  double* lvl = NULL;      /* this window's mean and spread, 2*d     */
-  double* lvl_warm = NULL; /* warmup rows of them, for the cut points */
-  double* lvl_bkpt = NULL; /* their cut points, rows of MAX_ALPHABET  */
-  int* lvl_alpha = NULL;   /* LEVEL_ALPHABET in every slot            */
-  int* lvl_word = NULL;    /* their letters                           */
-  // Extra letters per word: mean and spread of every channel, or none
-  int n_lvl = cfg.level_letters ? 2 * cfg.d : 0;
-  FILE* out = NULL;
-  FILE* epochs_f = NULL;
+  double *ev = NULL;
+  int *bits = NULL;
+  int *alphabet_arr = NULL;
+  double *ev_live = NULL;
+  double *angles_scratch = NULL;
+  double *angles = NULL;
+  double *advance_scratch = NULL;
+  int *perm = NULL;
+  FILE *out = NULL;
+  FILE *epochs_f = NULL;
   int out_owned = 0;
 
   RunningMean my_stats = {0};
+  double oja_ms = 0.0; /* running mean of |xc|^2 / m, raw windows only */
+  long oja_ms_n = 0;   /* windows in it */
   OjaPCA oja_live = {0};
   OjaPCA oja_avg = {0};
   OjaPCA oja_frozen = {0};
   OjaPCA oja_cand = {0};
 
-  const OjaPCA* symbol_basis =
-      &oja_avg;  // Read-only alias pointing to the active projection basis it
-                 // switches from oja_avg to oja_frozen after warmup
+  const OjaPCA *symbol_basis =
+      &oja_avg; // Read-only alias pointing to the active projection basis it
+                // switches from oja_avg to oja_frozen after warmup
   WindowStream stream = {0};
   ProjRing ring = {0};
   ProjRing cand_ring = {0};
@@ -513,30 +491,17 @@ int main(int argc, char* argv[]) {
   bits = calloc((size_t)cfg.k, sizeof(int));
   angles_scratch = calloc(
       (size_t)cfg.k * (size_t)(cfg.k + 1),
-      sizeof(double));  // Pre-allocate k*k cross-Gram matrix plus k singular
-                        // values in one contiguous block for subspace_angles
+      sizeof(double)); // Pre-allocate k*k cross-Gram matrix plus k singular
+                       // values in one contiguous block for subspace_angles
   angles = calloc((size_t)cfg.k, sizeof(double));
   perm = calloc((size_t)cfg.k, sizeof(int));
   alphabet_arr = calloc((size_t)cfg.k, sizeof(int));
   ev_live = calloc((size_t)cfg.k, sizeof(double));
   advance_scratch =
       calloc((size_t)(2 * cfg.k * cfg.k + cfg.k + 2 * cfg.m),
-             sizeof(double));  // Overlap table, accumulated Jacobi rotations
-                               // and cosines, plus one principal direction and
-                               // its partner, for subspace_advance
-
-  if (n_lvl) {
-    lvl = calloc((size_t)n_lvl, sizeof(double));
-    lvl_warm = calloc((size_t)cfg.warmup * n_lvl, sizeof(double));
-    lvl_bkpt = calloc((size_t)n_lvl * MAX_ALPHABET, sizeof(double));
-    lvl_alpha = calloc((size_t)n_lvl, sizeof(int));
-    lvl_word = calloc((size_t)n_lvl, sizeof(int));
-    if (!lvl || !lvl_warm || !lvl_bkpt || !lvl_alpha || !lvl_word) {
-      fprintf(stderr, "Error: Memory allocation failed for level letters\n");
-      goto cleanup;
-    }
-    for (int j = 0; j < n_lvl; j++) lvl_alpha[j] = LEVEL_ALPHABET;
-  }
+             sizeof(double)); // Overlap table, accumulated Jacobi rotations and
+                              // cosines, plus one principal direction and its
+                              // partner, for subspace_advance
 
   if (!win || !xc || !y || !y_cand || !word || !bkpt || !warmup_proj ||
       !warm_x || !ev || !bits || !ev_live || !alphabet_arr || !angles_scratch ||
@@ -552,9 +517,8 @@ int main(int argc, char* argv[]) {
   }
 
   if (oja_init(&oja_live, cfg.k, cfg.m) != 0) {
-    fprintf(stderr,
-            "Error: oja_init failed, components must not exceed "
-            "channels * window\n");
+    fprintf(stderr, "Error: oja_init failed, components must not exceed "
+                    "channels * window\n");
     goto cleanup;
   }
 
@@ -597,8 +561,8 @@ int main(int argc, char* argv[]) {
   }
 
   fprintf(out, "window");
-  for (int j = 0; j < cfg.k; j++) fprintf(out, ",sym%d", j);
-  for (int c = 0; c < n_lvl / 2; c++) fprintf(out, ",level%d,spread%d", c, c);
+  for (int j = 0; j < cfg.k; j++)
+    fprintf(out, ",sym%d", j);
   fprintf(out, "\n");
   // The epoch index, one line per epoch. Opened with "w" so every run starts
   // a clean file
@@ -624,7 +588,7 @@ int main(int argc, char* argv[]) {
     // default exists outside the C. The two compile-time constants they
     // need go in as comments, which keeps the file valid as a settings file
     len = snprintf(idx_path, sizeof(idx_path), "%s/settings.cfg", run.out_dir);
-    FILE* sf = (len < 0 || (size_t)len >= sizeof(idx_path))
+    FILE *sf = (len < 0 || (size_t)len >= sizeof(idx_path))
                    ? NULL
                    : fopen(idx_path, "w");
     if (!sf) {
@@ -642,21 +606,21 @@ int main(int argc, char* argv[]) {
     double t0 = now_seconds();
     int got = stream_next(&stream, win);
     t_io += now_seconds() - t0;
-    if (!got) break;
+    if (!got)
+      break;
 
     t0 = now_seconds();
     n_seen++;
 
-    // Keep what z-norm is about to erase. n_lvl is 0 when the switch is off
-    for (int c = 0; c < n_lvl / 2; c++)
-      window_level(&win[c * cfg.m_time], cfg.m_time, &lvl[2 * c],
-                   &lvl[2 * c + 1]);
-
-    // Channel-wise z-score normalization
-    for (int c = 0; c < cfg.d; c++) {
-      znorm_row(&win[c * cfg.m_time],
-                cfg.m_time);  // Normalize each contiguous m_time channel slice
-                              // independently inside the Mode-1 unfolded window
+    // Channel-wise z-score normalization. Off: the raw window goes on,
+    // level and amplitude included
+    if (cfg.window_znorm) {
+      for (int c = 0; c < cfg.d; c++) {
+        znorm_row(&win[c * cfg.m_time],
+                  cfg.m_time); // Normalize each contiguous m_time channel
+                               // slice independently inside the Mode-1
+                               // unfolded window
+      }
     }
 
     // Center window by removing the running streaming mean. xc feeds Oja
@@ -665,6 +629,28 @@ int main(int argc, char* argv[]) {
     rmean_update(&my_stats, win);
     for (int i = 0; i < cfg.m; i++) {
       xc[i] = win[i] - my_stats.mean[i];
+    }
+
+    // Raw windows only: give Oja the scale z-norm would have given it.
+    // lr = step / m is tuned for |xc|^2 ~ m. Divide xc by the running RMS
+    // of its own size, from past and present windows only (causal):
+    //   ms_n = ms_{n-1} + (|xc|^2 / m - ms_{n-1}) / n,   xc <- xc / sqrt(ms_n)
+    // then cap |xc| at 2*sqrt(m), the largest a z-normed xc can be
+    // (|win| <= sqrt(m) and |mean| <= sqrt(m)), so one jump cannot take a
+    // larger Oja step than the z-normed pipeline ever takes. Words never see
+    // this: they use win. Off with window_znorm, so that path is unchanged
+    if (!cfg.window_znorm) {
+      double sq = dot_product(xc, xc, cfg.m);
+      oja_ms_n++;
+      oja_ms += (sq / cfg.m - oja_ms) / (double)oja_ms_n;
+      if (oja_ms > SPARTAN_EPS) {
+        double s = 1.0 / sqrt(oja_ms);
+        double cap = 2.0 * sqrt((double)cfg.m);
+        if (s * sqrt(sq) > cap)
+          s = cap / sqrt(sq);
+        for (int i = 0; i < cfg.m; i++)
+          xc[i] *= s;
+      }
     }
 
     // Online PCA update via Oja's rule
@@ -683,8 +669,10 @@ int main(int argc, char* argv[]) {
     if (n_seen % cfg.gs_period == 0) {
       double d_err, l_err;
       oja_orthonormality_error(&oja_live, &d_err, &l_err);
-      if (d_err > worst_dot_seen) worst_dot_seen = d_err;
-      if (l_err > worst_len_seen) worst_len_seen = l_err;
+      if (d_err > worst_dot_seen)
+        worst_dot_seen = d_err;
+      if (l_err > worst_len_seen)
+        worst_len_seen = l_err;
 
       /* The guarantee is stated about the basis that WRITES, and that is now
          the smoothed one, so its drift is the number with meaning. The raw
@@ -692,8 +680,10 @@ int main(int argc, char* argv[]) {
        */
       double da_err, la_err;
       oja_orthonormality_error(&oja_avg, &da_err, &la_err);
-      if (da_err > worst_dot_avg) worst_dot_avg = da_err;
-      if (la_err > worst_len_avg) worst_len_avg = la_err;
+      if (da_err > worst_dot_avg)
+        worst_dot_avg = da_err;
+      if (la_err > worst_len_avg)
+        worst_len_avg = la_err;
 
       gram_schmidt(&oja_live);
       /* The average of unit vectors is not a unit vector and the average of
@@ -735,7 +725,8 @@ int main(int argc, char* argv[]) {
                   (1.0 - RATE_BLEND) * theta_rate + RATE_BLEND * sample;
             }
 
-            if (theta_rate > worst_rate) worst_rate = theta_rate;
+            if (theta_rate > worst_rate)
+              worst_rate = theta_rate;
           }
           theta_prev = theta_max;
           theta_prev_at = n_seen;
@@ -796,7 +787,8 @@ int main(int argc, char* argv[]) {
             if (cfg.freeze_ahead > 0.0 && theta_max > SPARTAN_EPS) {
               f = (theta_max + cfg.freeze_ahead * cfg.theta_threshold) /
                   theta_max;
-              if (f > FREEZE_AHEAD_MAX) f = FREEZE_AHEAD_MAX;
+              if (f > FREEZE_AHEAD_MAX)
+                f = FREEZE_AHEAD_MAX;
             }
             if (f > 1.0) {
               cand_rc = subspace_advance(&oja_frozen, &oja_avg, f, &oja_cand,
@@ -830,7 +822,8 @@ int main(int argc, char* argv[]) {
           if (theta_max > cfg.theta_threshold) {
             if (was_below) {
               double over = theta_max - cfg.theta_threshold;
-              if (over > worst_over) worst_over = over;
+              if (over > worst_over)
+                worst_over = over;
             }
             was_below = 0;
 
@@ -852,7 +845,8 @@ int main(int argc, char* argv[]) {
               // on their projections: the same operation as the warm-up.
               // warm_pca centres by the ring's own mean internally; the
               // projections below are of the windows as stored, uncentred
-              if (oja_copy_from(&oja_cand, &oja_avg) != 0) goto cleanup;
+              if (oja_copy_from(&oja_cand, &oja_avg) != 0)
+                goto cleanup;
               int pr = warm_pca(win_ring, win_count, cfg.m, &oja_cand);
               fprintf(stderr, "rebase_pca,%ld,%d\n", n_seen - 1, pr);
               pring_reset(&cand_ring);
@@ -864,12 +858,11 @@ int main(int argc, char* argv[]) {
               if (build_dictionary(&cfg, cand_ring.buf, cand_ring.count,
                                    "rebasis", perm, ev, bits, alphabet_arr,
                                    bkpt, &new_score) !=
-                  0)  // Pass flat ring buffer directly, column variance and
-                      // quantiles are invariant to circular row order
+                  0) // Pass flat ring buffer directly, column variance and
+                     // quantiles are invariant to circular row order
               {
-                fprintf(stderr,
-                        "Error: could not build candidate dictionary "
-                        "at re-basing\n");
+                fprintf(stderr, "Error: could not build candidate dictionary "
+                                "at re-basing\n");
                 t_algo += now_seconds() - t0;
                 goto cleanup;
               }
@@ -900,7 +893,8 @@ int main(int argc, char* argv[]) {
                         stale_rc, n_seen - 1);
                 staleness = 0.0;
               }
-              if (staleness > worst_stale) worst_stale = staleness;
+              if (staleness > worst_stale)
+                worst_stale = staleness;
               /* Reorder, keep the orientation against the outgoing
                  basis, promote. cand_ring is what the cut points came
                  from, so a flip negates its column too. */
@@ -940,7 +934,8 @@ int main(int argc, char* argv[]) {
 
               if (late_since >= 0) {
                 long late = n_seen - late_since;
-                if (late > worst_late) worst_late = late;
+                if (late > worst_late)
+                  worst_late = late;
               }
               late_since = -1;
 
@@ -954,7 +949,8 @@ int main(int argc, char* argv[]) {
             late_since = -1;
           }
           fprintf(stderr, "angle,%ld,%.9f", n_seen - 1, theta_max);
-          for (int j = 0; j < cfg.k; j++) fprintf(stderr, ",%.9f", angles[j]);
+          for (int j = 0; j < cfg.k; j++)
+            fprintf(stderr, ",%.9f", angles[j]);
 #ifdef STAGING_A
           fprintf(stderr, ",%.9f,%.9f", theta_noise, theta_rate);
 #else
@@ -984,7 +980,8 @@ int main(int argc, char* argv[]) {
     memcpy(&win_ring[(size_t)win_pos * cfg.m], win,
            (size_t)cfg.m * sizeof(double));
     win_pos = (win_pos + 1) % cfg.ring_w;
-    if (win_count < cfg.ring_w) win_count++;
+    if (win_count < cfg.ring_w)
+      win_count++;
 #endif
     // Project the z-normed window, nothing subtracted, onto the epoch's basis
     project(symbol_basis, win, y);
@@ -1007,35 +1004,16 @@ int main(int argc, char* argv[]) {
     if (!have_bkpt) {
       for (int j = 0; j < cfg.k; j++) {
         warmup_proj[warm_count * cfg.k + j] =
-            y[j];  // Append k-dimensional projection into row warm_count of
-                   // flat warmup matrix
+            y[j]; // Append k-dimensional projection into row warm_count of
+                  // flat warmup matrix
       }
       // Keep the window itself: the epoch-0 basis is computed from these,
       // not from Oja's estimate
       memcpy(&warm_x[(size_t)warm_count * cfg.m], win,
              (size_t)cfg.m * sizeof(double));
-      for (int j = 0; j < n_lvl; j++) lvl_warm[warm_count * n_lvl + j] = lvl[j];
       warm_count++;
 
       if (warm_count == cfg.warmup) {
-        if (n_lvl) {
-          // Equi-depth cuts over the warm-up, by the same code that cuts
-          // the PCA letters. Never re-cut: a level is not tied to a basis,
-          // so an epoch change does not move it
-          compute_breakpoints(lvl_warm, warm_count, n_lvl, lvl_alpha, lvl_bkpt);
-          if (run.out_dir[0]) {
-            char path[512];
-            int len =
-                snprintf(path, sizeof(path), "%s/levels.csv", run.out_dir);
-            if (len < 0 || (size_t)len >= sizeof(path) ||
-                write_levels(path, n_lvl, lvl_alpha, lvl_bkpt) != 0) {
-              t_algo += now_seconds() - t0;
-              goto cleanup;
-            }
-          }
-          free(lvl_warm);
-          lvl_warm = NULL;
-        }
         /* The epoch-0 basis is exact PCA on the warm-up windows, started
            from where Oja got to. Measured on the tsb streams: Oja alone
            needed 2200 to 4400 windows to find the weakest planted part,
@@ -1107,10 +1085,10 @@ int main(int argc, char* argv[]) {
 
     // Quantization: convert subspace coordinates into discrete symbols
     digitize(y, bkpt, cfg.k, alphabet_arr, word);
-    if (n_lvl) digitize(lvl, lvl_bkpt, n_lvl, lvl_alpha, lvl_word);
     n_words++;
 
-    if (n_seen % cfg.ring_w == 0) pring_refresh(&ring);
+    if (n_seen % cfg.ring_w == 0)
+      pring_refresh(&ring);
 
     if (ring.count == ring.cap) {
       pring_importances(&ring, ev_live);
@@ -1169,8 +1147,6 @@ int main(int argc, char* argv[]) {
         fprintf(out, ",%d", word[j]);
       }
     }
-    // Always numbers: a level letter is a cell index, not a PCA symbol
-    for (int j = 0; j < n_lvl; j++) fprintf(out, ",%d", lvl_word[j]);
     fprintf(out, "\n");
 
     t_algo += now_seconds() - t0;
@@ -1234,8 +1210,10 @@ int main(int argc, char* argv[]) {
   rc = EXIT_SUCCESS;
 
 cleanup:
-  if (out && out_owned) fclose(out);
-  if (epochs_f) fclose(epochs_f);
+  if (out && out_owned)
+    fclose(out);
+  if (epochs_f)
+    fclose(epochs_f);
   free(win);
   free(xc);
   free(y);
@@ -1255,11 +1233,6 @@ cleanup:
   free(angles);
   free(advance_scratch);
   free(perm);
-  free(lvl);
-  free(lvl_warm);
-  free(lvl_bkpt);
-  free(lvl_alpha);
-  free(lvl_word);
   oja_free(&oja_live);
   oja_free(&oja_frozen);
   oja_free(&oja_avg);

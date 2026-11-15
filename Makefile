@@ -27,6 +27,8 @@ OUT_DIR = $(shell sed -n 's/^[[:space:]]*out_dir[[:space:]]*=[[:space:]]*//p' $(
 WORDS   = $(shell sed -n 's/^[[:space:]]*words[[:space:]]*=[[:space:]]*//p' $(CFG))
 GOLD    = $(dir $(patsubst %/,%,$(dir $(CFG))))expected/$(NAME)
 
+# When the C stops, its reason is in the log the target writes, so the
+# targets print the end of that log instead of failing silently
 # The summary lines worth guarding. Defined ONCE and used by run, check and
 # golden. "time" is deliberately absent: it changes every run
 KEEP = '^(ev|bits|alphabet|score|windows|drift|noise|rate|overshoot|epochs|late|staleness)'
@@ -77,7 +79,8 @@ data:
 # the summary to the terminal
 run: $(BIN)/spartan_toy
 	@mkdir -p $(OUT_DIR)
-	@./$(BIN)/spartan_toy $(CFG) 2> $(OUT_DIR)/run.log
+	@./$(BIN)/spartan_toy $(CFG) 2> $(OUT_DIR)/run.log \
+	    || { tail -n 5 $(OUT_DIR)/run.log; exit 1; }
 	@grep -E $(KEEP) $(OUT_DIR)/run.log
 
 # The whole comparison for one cfg: our run, both batch references, the
@@ -105,14 +108,22 @@ sweep-plan: $(BIN)/spartan_toy
 # output is right, only that a change did not alter it
 check: $(BIN)/spartan_toy_dbg
 	@mkdir -p $(OUT_DIR)
-	@./$(BIN)/spartan_toy_dbg $(CFG) 2> $(OUT_DIR)/check.log
+	@./$(BIN)/spartan_toy_dbg $(CFG) 2> $(OUT_DIR)/check.log \
+	    || { tail -n 5 $(OUT_DIR)/check.log; exit 1; }
 	@grep -E $(KEEP) $(OUT_DIR)/check.log > $(OUT_DIR)/summary.txt
 	@diff $(GOLD)/words.csv   $(WORDS)                && echo "words    OK"
 	@diff $(GOLD)/summary.txt $(OUT_DIR)/summary.txt  && echo "summary  OK"
 
+# Attack test for window_znorm = false: words, epochs and splits must be
+# identical for x and a*x + b, in both designs
+affine: $(BIN)/spartan_toy $(BIN)/spartan_A
+	$(PYTHON) tools/check_affine.py --bin ./$(BIN)/spartan_toy
+	$(PYTHON) tools/check_affine.py --bin ./$(BIN)/spartan_A
+
 golden: $(BIN)/spartan_toy_dbg
 	@mkdir -p $(GOLD) $(OUT_DIR)
-	@./$(BIN)/spartan_toy_dbg $(CFG) 2> $(OUT_DIR)/golden.log
+	@./$(BIN)/spartan_toy_dbg $(CFG) 2> $(OUT_DIR)/golden.log \
+	    || { tail -n 5 $(OUT_DIR)/golden.log; exit 1; }
 	@cp $(WORDS) $(GOLD)/words.csv
 	@grep -E $(KEEP) $(OUT_DIR)/golden.log > $(GOLD)/summary.txt
 	@echo "golden updated in $(GOLD), read it before you commit it:"
@@ -124,4 +135,4 @@ clean:
 	rm -rf $(BIN)
 	rm -rf tests/*/out
 
-.PHONY: all A debug unit data run compare truth sweep sweep-plan check golden clean
+.PHONY: all A debug unit data run compare truth sweep sweep-plan check affine golden clean

@@ -13,3 +13,4 @@ tests/real/
 
 # sweep results
 out/
+.venv/
